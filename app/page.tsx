@@ -357,14 +357,14 @@ function Hero() {
   const demoRef = useRef<HTMLDivElement>(null)
 
   return (
-    <section className="relative pt-32 pb-20 lg:pt-40 lg:pb-32 overflow-hidden">
+    <section className="relative pt-24 pb-16 lg:pt-40 lg:pb-32 overflow-hidden">
       <div className="absolute inset-0 -z-10 pointer-events-none">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[600px] bg-emerald-500/10 rounded-full blur-[120px] animate-pulse-glow" />
         <div className="absolute bottom-0 right-0 w-[600px] h-[400px] bg-emerald-500/10 rounded-full blur-[100px]" />
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="grid lg:grid-cols-2 gap-12 lg:gap-20 items-center">
+        <div className="grid lg:grid-cols-2 gap-8 lg:gap-20 items-center">
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
@@ -400,7 +400,7 @@ function Hero() {
                 Documentation
               </Button>
             </div>
-            <div className="flex items-center gap-6 text-sm text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-muted-foreground">
               <div className="flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4 text-emerald-500" />
                 <span>Deterministic Finality</span>
@@ -439,7 +439,7 @@ function Hero() {
                     <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-400 flex items-center justify-center flex-shrink-0">
                       <Bot className="w-4 h-4 text-white" />
                     </div>
-                    <div className="bg-secondary rounded-2xl rounded-tl-sm px-4 py-3 max-w-[85%] sm:max-w-[80%]">
+                    <div className="bg-secondary rounded-2xl rounded-tl-sm px-3 sm:px-4 py-3 max-w-[90%] sm:max-w-[80%]">
                       <p className="text-sm">
                         Hi! I&apos;m your SettleFlow AI agent. Tell me who to pay, how much, and when —
                         I&apos;ll handle the USDC settlement.
@@ -448,7 +448,7 @@ function Hero() {
                   </div>
 
                   <div className="flex gap-3 justify-end">
-                    <div className="bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-4 py-3 max-w-[85%] sm:max-w-[80%]">
+                    <div className="bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-3 sm:px-4 py-3 max-w-[90%] sm:max-w-[80%]">
                       <p className="text-sm">
                         Send 500 USDC to alice.arc every Monday at 9am for the next 3 months
                       </p>
@@ -462,9 +462,9 @@ function Hero() {
                     <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-400 flex items-center justify-center flex-shrink-0">
                       <Bot className="w-4 h-4 text-white" />
                     </div>
-                    <div className="bg-secondary rounded-2xl rounded-tl-sm px-4 py-3 max-w-[85%] space-y-2">
+                    <div className="bg-secondary rounded-2xl rounded-tl-sm px-3 sm:px-4 py-3 max-w-[90%] sm:max-w-[80%] space-y-2">
                       <p className="text-sm">Got it! I&apos;ve parsed your intent:</p>
-                      <div className="bg-background/50 rounded-lg p-3 space-y-1 text-xs font-mono">
+                      <div className="bg-background/50 rounded-lg p-3 space-y-1 text-xs font-mono overflow-x-auto">
                         <div className="flex justify-between"><span className="text-muted-foreground">Recipient:</span> <span>alice.arc</span></div>
                         <div className="flex justify-between"><span className="text-muted-foreground">Amount:</span> <span>500 USDC</span></div>
                         <div className="flex justify-between"><span className="text-muted-foreground">Frequency:</span> <span>Weekly (Mon 09:00 UTC)</span></div>
@@ -590,7 +590,7 @@ function Demo() {
             <p className="text-sm font-medium text-muted-foreground mb-4 uppercase tracking-wider">
               Choose a Scenario
             </p>
-            <div className="flex lg:flex-col gap-3 overflow-x-auto lg:overflow-visible pb-2 lg:pb-0 scrollbar-hide">
+            <div className="flex lg:flex-col gap-3 overflow-x-auto lg:overflow-visible pb-2 lg:pb-0 scrollbar-hide -mx-4 sm:mx-0 px-4 sm:px-0">
             
             {scenarios.map((sc, i) => (
               <button
@@ -638,7 +638,7 @@ function Demo() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -10 }}
                   transition={{ duration: 0.3 }}
-                  className="flex-1 p-6 space-y-6 overflow-y-auto scrollbar-hide"
+                  className="flex-1 p-4 sm:p-6 space-y-6 overflow-y-auto scrollbar-hide"
                 >
                   <div className="bg-secondary rounded-xl p-4">
                     <p className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
@@ -692,7 +692,7 @@ function Demo() {
                     <p className="text-xs text-muted-foreground uppercase tracking-wider mb-3">
                       Transaction Preview
                     </p>
-                    <div className="bg-background border border-border rounded-xl p-4 space-y-2 font-mono text-xs">
+                    <div className="bg-background border border-border rounded-xl p-4 space-y-2 font-mono text-xs overflow-x-auto">
                       <div className="flex justify-between"><span className="text-muted-foreground">From:</span> <span>{s.tx.from}</span></div>
                       <div className="flex justify-between"><span className="text-muted-foreground">To:</span> <span>{s.tx.to}</span></div>
                       <div className="flex justify-between"><span className="text-muted-foreground">Amount:</span> <span className="text-emerald-500 font-semibold">{s.tx.amount}</span></div>
@@ -786,7 +786,7 @@ function CTA() {
               <div className="flex flex-col sm:flex-row gap-3 justify-center max-w-sm mx-auto">
                 <div className="flex-1 relative">
                   <Input placeholder="Enter your email" className="pr-28 rounded-xl border-border/60 focus:ring-2 focus:ring-primary/30 focus:border-primary/40" />
-                  <Button className="absolute right-1 top-1/2 -translate-y-1/2 h-8 px-3 text-xs rounded-xl">
+                  <Button className="absolute right-1 top-1/2 -translate-y-1/2 h-8 px-3 text-xs rounded-xl max-sm:relative max-sm:w-full max-sm:mt-2 max-sm:static max-sm:translate-y-0">
                     Join Waitlist
                   </Button>
                 </div>
