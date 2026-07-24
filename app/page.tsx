@@ -375,12 +375,8 @@ function Hero() {
               <StatusDot />
               Intelligent Payment Automation
             </div>
-            <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1]">
-              Pay with
-              <br />
-              <GradientText>Natural Language</GradientText>
-              <br />
-              Instantly
+            <h1 className="text-[2rem] sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] text-balance">
+              Pay with <GradientText>Natural Language</GradientText> Instantly
             </h1>
             <p className="text-lg text-muted-foreground max-w-lg leading-relaxed">
               An AI agent that understands your payment intent, schedules USDC settlements
@@ -439,8 +435,8 @@ function Hero() {
                     <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-400 flex items-center justify-center flex-shrink-0">
                       <Bot className="w-4 h-4 text-white" />
                     </div>
-                    <div className="bg-secondary rounded-2xl rounded-tl-sm px-3 sm:px-4 py-3 max-w-[90%] sm:max-w-[80%]">
-                      <p className="text-sm">
+                    <div className="bg-secondary rounded-2xl rounded-tl-sm px-3 sm:px-4 py-3 max-w-[85%] sm:max-w-[80%]">
+                      <p className="text-sm break-words">
                         Hi! I&apos;m your SettleFlow AI agent. Tell me who to pay, how much, and when —
                         I&apos;ll handle the USDC settlement.
                       </p>
@@ -448,8 +444,8 @@ function Hero() {
                   </div>
 
                   <div className="flex gap-3 justify-end">
-                    <div className="bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-3 sm:px-4 py-3 max-w-[90%] sm:max-w-[80%]">
-                      <p className="text-sm">
+                    <div className="bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-3 sm:px-4 py-3 max-w-[85%] sm:max-w-[80%]">
+                      <p className="text-sm break-words">
                         Send 500 USDC to alice.arc every Monday at 9am for the next 3 months
                       </p>
                     </div>
@@ -462,14 +458,14 @@ function Hero() {
                     <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-400 flex items-center justify-center flex-shrink-0">
                       <Bot className="w-4 h-4 text-white" />
                     </div>
-                    <div className="bg-secondary rounded-2xl rounded-tl-sm px-3 sm:px-4 py-3 max-w-[90%] sm:max-w-[80%] space-y-2">
-                      <p className="text-sm">Got it! I&apos;ve parsed your intent:</p>
-                      <div className="bg-background/50 rounded-lg p-3 space-y-1 text-xs font-mono overflow-x-auto">
-                        <div className="flex justify-between"><span className="text-muted-foreground">Recipient:</span> <span>alice.arc</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">Amount:</span> <span>500 USDC</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">Frequency:</span> <span>Weekly (Mon 09:00 UTC)</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">Duration:</span> <span>12 payments (3 months)</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">Network:</span> <span className="text-emerald-500">Arc USDC</span></div>
+                    <div className="bg-secondary rounded-2xl rounded-tl-sm px-3 sm:px-4 py-3 max-w-[85%] sm:max-w-[80%] space-y-2">
+                      <p className="text-sm break-words">Got it! I&apos;ve parsed your intent:</p>
+                      <div className="bg-background/50 rounded-lg p-3 space-y-1 text-xs font-mono overflow-x-auto w-full max-w-full">
+                        <div className="flex gap-2 text-xs"><span className="text-muted-foreground shrink-0">Recipient:</span> <span className="break-all min-w-0">alice.arc</span></div>
+                        <div className="flex gap-2 text-xs"><span className="text-muted-foreground shrink-0">Amount:</span> <span className="break-all min-w-0">500 USDC</span></div>
+                        <div className="flex gap-2 text-xs"><span className="text-muted-foreground shrink-0">Frequency:</span> <span className="break-all min-w-0">Weekly (Mon 09:00 UTC)</span></div>
+                        <div className="flex gap-2 text-xs"><span className="text-muted-foreground shrink-0">Duration:</span> <span className="break-all min-w-0">12 payments (3 months)</span></div>
+                        <div className="flex gap-2 text-xs"><span className="text-muted-foreground shrink-0">Network:</span> <span className="text-emerald-500 break-all min-w-0">Arc USDC</span></div>
                       </div>
                       <div className="flex gap-2 pt-1">
                         <Button size="sm" className="text-xs h-8 rounded-xl">Confirm & Schedule</Button>
@@ -596,19 +592,19 @@ function Demo() {
               <button
                 key={sc.title}
                 onClick={() => setActiveScenario(i)}
-                className={`w-full text-left p-4 rounded-xl border transition-all group ${
+                className={`w-full min-w-0 text-left p-4 rounded-xl border transition-all group ${
                   activeScenario === i
                     ? "border-emerald-500 bg-accent ring-2 ring-emerald-500 ring-offset-2"
                     : "border-border bg-card hover:bg-accent"
                 }`}
               >
-                <div className="flex items-start gap-3">
+                <div className="flex items-start gap-3 min-w-0">
                   <div className={`w-10 h-10 rounded-xl ${sc.iconBg} flex items-center justify-center flex-shrink-0`}>
                     <sc.icon className={`w-5 h-5 ${sc.iconColor}`} />
                   </div>
-                  <div>
-                    <h4 className="font-semibold text-sm">{sc.title}</h4>
-                    <p className="text-xs text-muted-foreground mt-1 line-clamp-2">&quot;{sc.intent}&quot;</p>
+                  <div className="min-w-0">
+                    <h4 className="font-semibold text-sm truncate">{sc.title}</h4>
+                    <p className="text-xs text-muted-foreground mt-1 line-clamp-2 break-words">&quot;{sc.intent}&quot;</p>
                   </div>
                 </div>
               </button>
@@ -651,11 +647,11 @@ function Demo() {
                     <p className="text-xs text-muted-foreground uppercase tracking-wider mb-3">
                       AI Parsed Intent
                     </p>
-                    <div className="bg-background border border-border rounded-xl p-4 space-y-2">
+                    <div className="bg-background border border-border rounded-xl p-4 space-y-2 max-w-full">
                       {Object.entries(s.parsed).map(([k, v]) => (
-                        <div key={k} className="flex justify-between text-sm">
-                          <span className="text-muted-foreground">{k}:</span>
-                          <span className="font-mono font-medium">{v}</span>
+                        <div key={k} className="flex gap-2 text-sm">
+                          <span className="text-muted-foreground shrink-0">{k}:</span>
+                          <span className="font-mono font-medium break-all min-w-0 text-right">{v}</span>
                         </div>
                       ))}
                     </div>
@@ -669,18 +665,18 @@ function Demo() {
                       {s.schedule.map((item, i) => (
                         <div
                           key={i}
-                          className="flex items-center justify-between p-3 rounded-lg border border-border bg-background"
+                          className="flex items-center gap-2 p-3 rounded-lg border border-border bg-background"
                         >
-                          <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-emerald-500/10 flex items-center justify-center">
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            <div className="w-8 h-8 rounded-full bg-emerald-500/10 flex items-center justify-center shrink-0">
                               <Calendar className="w-4 h-4 text-emerald-500" />
                             </div>
-                            <div>
-                              <p className="text-sm font-medium">{item.date}</p>
-                              <p className="text-xs text-muted-foreground">{item.amount}</p>
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium truncate">{item.date}</p>
+                              <p className="text-xs text-muted-foreground truncate">{item.amount}</p>
                             </div>
                           </div>
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColor(item.status)}`}>
+                          <span className={`px-2 py-1 rounded-full text-xs font-medium shrink-0 ${statusColor(item.status)}`}>
                             {item.status}
                           </span>
                         </div>
@@ -692,17 +688,17 @@ function Demo() {
                     <p className="text-xs text-muted-foreground uppercase tracking-wider mb-3">
                       Transaction Preview
                     </p>
-                    <div className="bg-background border border-border rounded-xl p-4 space-y-2 font-mono text-xs overflow-x-auto">
-                      <div className="flex justify-between"><span className="text-muted-foreground">From:</span> <span>{s.tx.from}</span></div>
-                      <div className="flex justify-between"><span className="text-muted-foreground">To:</span> <span>{s.tx.to}</span></div>
-                      <div className="flex justify-between"><span className="text-muted-foreground">Amount:</span> <span className="text-emerald-500 font-semibold">{s.tx.amount}</span></div>
-                      <div className="flex justify-between"><span className="text-muted-foreground">Gas (USDC):</span> <span>{s.tx.gas}</span></div>
-                      <div className="flex justify-between"><span className="text-muted-foreground">Nonce:</span> <span>{s.tx.nonce}</span></div>
+                    <div className="bg-background border border-border rounded-xl p-4 space-y-2 font-mono text-xs max-w-full overflow-x-auto">
+                      <div className="flex gap-2"><span className="text-muted-foreground shrink-0">From:</span> <span className="break-all min-w-0">{s.tx.from}</span></div>
+                      <div className="flex gap-2"><span className="text-muted-foreground shrink-0">To:</span> <span className="break-all min-w-0">{s.tx.to}</span></div>
+                      <div className="flex gap-2"><span className="text-muted-foreground shrink-0">Amount:</span> <span className="text-emerald-500 font-semibold break-all min-w-0">{s.tx.amount}</span></div>
+                      <div className="flex gap-2"><span className="text-muted-foreground shrink-0">Gas (USDC):</span> <span className="break-all min-w-0">{s.tx.gas}</span></div>
+                      <div className="flex gap-2"><span className="text-muted-foreground shrink-0">Nonce:</span> <span className="break-all min-w-0">{s.tx.nonce}</span></div>
                       {"memo" in s.tx && (
-                        <div className="flex justify-between"><span className="text-muted-foreground">Memo:</span> <span>{(s.tx as any).memo}</span></div>
+                        <div className="flex gap-2"><span className="text-muted-foreground shrink-0">Memo:</span> <span className="break-all min-w-0">{(s.tx as any).memo}</span></div>
                       )}
                       {"condition" in s.tx && (
-                        <div className="flex justify-between"><span className="text-muted-foreground">Condition:</span> <span className="text-amber-500">{(s.tx as any).condition}</span></div>
+                        <div className="flex gap-2"><span className="text-muted-foreground shrink-0">Condition:</span> <span className="text-amber-500 break-all min-w-0">{(s.tx as any).condition}</span></div>
                       )}
                     </div>
                   </div>
@@ -855,7 +851,7 @@ function Footer() {
 
 export default function Home() {
   return (
-    <main className="min-h-screen">
+    <main className="min-h-screen overflow-x-hidden">
       <Nav />
       <Hero />
       <Stats />
