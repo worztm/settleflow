@@ -783,16 +783,8 @@ function CTA() {
                 Join the waitlist for early access to SettleFlow. Be among the first to experience
                 autonomous USDC settlement.
               </p>
-              <div className="flex flex-col sm:flex-row gap-3 justify-center max-w-sm mx-auto">
-                <div className="flex-1 relative">
-                  <Input placeholder="Enter your email" className="pr-28 rounded-xl border-border/60 focus:ring-2 focus:ring-primary/30 focus:border-primary/40" />
-                  <Button className="absolute right-1 top-1/2 -translate-y-1/2 h-8 px-3 text-xs rounded-xl max-sm:relative max-sm:w-full max-sm:mt-2 max-sm:static max-sm:translate-y-0">
-                    Join Waitlist
-                  </Button>
-                </div>
-              </div>
               <p className="text-xs text-muted-foreground">
-                No spam. Unsubscribe anytime. Mainnet launch expected Q3 2026.
+                No spam. Unsubscribe anytime.
               </p>
             </CardContent>
           </Card>
