@@ -816,7 +816,7 @@ function Footer() {
             <ul className="space-y-2 text-sm text-muted-foreground">
               {["Features", "Changelog", "Roadmap"].map((item) => (
                 <li key={item}>
-                  <a href="#" className="hover:text-foreground transition-colors">{item}</a>
+                  <a href={item === "Roadmap" ? "/roadmap" : "#"} className="hover:text-foreground transition-colors">{item}</a>
                 </li>
               ))}
             </ul>
