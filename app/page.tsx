@@ -357,7 +357,7 @@ function Hero() {
   const demoRef = useRef<HTMLDivElement>(null)
 
   return (
-    <section className="relative pt-24 pb-16 lg:pt-40 lg:pb-32 overflow-hidden">
+    <section className="relative pt-24 pb-12 lg:pt-40 lg:pb-32 overflow-hidden">
       <div className="absolute inset-0 -z-10 pointer-events-none">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[600px] bg-emerald-500/10 rounded-full blur-[120px] animate-pulse-glow" />
         <div className="absolute bottom-0 right-0 w-[600px] h-[400px] bg-emerald-500/10 rounded-full blur-[100px]" />
@@ -528,9 +528,9 @@ function Stats() {
 
 function Features() {
   return (
-    <section id="features" className="py-16 sm:py-20 lg:py-32">
+    <section id="features" className="py-12 sm:py-20 lg:py-32">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center max-w-2xl mx-auto mb-10 sm:mb-16">
+          <div className="text-center max-w-2xl mx-auto mb-8 sm:mb-16">
             <h2 className="text-3xl sm:text-4xl font-bold tracking-tight mb-4">
               Built for Autonomous Finance
             </h2>
@@ -576,9 +576,9 @@ function Demo() {
   }
 
   return (
-    <section id="demo" className="py-16 sm:py-20 lg:py-32 bg-muted/30">
+    <section id="demo" className="py-12 sm:py-20 lg:py-32 bg-muted/30">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="text-center max-w-2xl mx-auto mb-10 sm:mb-16">
+        <div className="text-center max-w-2xl mx-auto mb-8 sm:mb-16">
           <h2 className="text-3xl sm:text-4xl font-bold tracking-tight mb-4">See It In Action</h2>
           <p className="text-muted-foreground text-lg">
             Try different payment scenarios and watch the AI agent parse, validate, and schedule settlements.
@@ -728,9 +728,9 @@ function Demo() {
 
 function Architecture() {
   return (
-    <section id="architecture" className="py-16 sm:py-20 lg:py-32">
+    <section id="architecture" className="py-12 sm:py-20 lg:py-32">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="text-center max-w-2xl mx-auto mb-10 sm:mb-16">
+        <div className="text-center max-w-2xl mx-auto mb-8 sm:mb-16">
           <h2 className="text-3xl sm:text-4xl font-bold tracking-tight mb-4">How It Works</h2>
           <p className="text-muted-foreground text-lg">
             From natural language to on-chain settlement in under a second.
@@ -770,7 +770,7 @@ function Architecture() {
 
 function CTA() {
   return (
-    <section className="py-16 sm:py-20 lg:py-32">
+    <section className="py-12 sm:py-20 lg:py-32">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
         <div className="relative">
           <div className="absolute -inset-8 bg-gradient-to-r from-emerald-500/10 to-emerald-400/10 rounded-3xl blur-3xl" />
