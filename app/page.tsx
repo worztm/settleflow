@@ -822,7 +822,7 @@ function Footer() {
           <div>
             <h4 className="font-semibold text-sm mb-4">Product</h4>
             <ul className="space-y-2 text-sm text-muted-foreground">
-              {["Features", "Pricing", "Changelog", "Roadmap"].map((item) => (
+              {["Features", "Changelog", "Roadmap"].map((item) => (
                 <li key={item}>
                   <a href="#" className="hover:text-foreground transition-colors">{item}</a>
                 </li>
@@ -846,7 +846,7 @@ function Footer() {
             <a href="#" className="text-muted-foreground hover:text-foreground transition-colors">
               <Twitter className="w-4 h-4" />
             </a>
-            <a href="#" className="text-muted-foreground hover:text-foreground transition-colors">
+            <a href="https://github.com/worztm/settleflow" target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-foreground transition-colors">
               <Github className="w-4 h-4" />
             </a>
             <a href="#" className="text-muted-foreground hover:text-foreground transition-colors">
