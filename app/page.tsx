@@ -441,8 +441,8 @@ function Hero() {
                     </div>
                     <div className="bg-secondary rounded-2xl rounded-tl-sm px-4 py-3 max-w-[85%] sm:max-w-[80%]">
                       <p className="text-sm">
-                        Hi! I'm your SettleFlow AI agent. Tell me who to pay, how much, and when —
-                        I'll handle the USDC settlement.
+                        Hi! I&apos;m your SettleFlow AI agent. Tell me who to pay, how much, and when —
+                        I&apos;ll handle the USDC settlement.
                       </p>
                     </div>
                   </div>
@@ -463,7 +463,7 @@ function Hero() {
                       <Bot className="w-4 h-4 text-white" />
                     </div>
                     <div className="bg-secondary rounded-2xl rounded-tl-sm px-4 py-3 max-w-[85%] space-y-2">
-                      <p className="text-sm">Got it! I've parsed your intent:</p>
+                      <p className="text-sm">Got it! I&apos;ve parsed your intent:</p>
                       <div className="bg-background/50 rounded-lg p-3 space-y-1 text-xs font-mono">
                         <div className="flex justify-between"><span className="text-muted-foreground">Recipient:</span> <span>alice.arc</span></div>
                         <div className="flex justify-between"><span className="text-muted-foreground">Amount:</span> <span>500 USDC</span></div>
@@ -608,7 +608,7 @@ function Demo() {
                   </div>
                   <div>
                     <h4 className="font-semibold text-sm">{sc.title}</h4>
-                    <p className="text-xs text-muted-foreground mt-1 line-clamp-2">"{sc.intent}"</p>
+                    <p className="text-xs text-muted-foreground mt-1 line-clamp-2">&quot;{sc.intent}&quot;</p>
                   </div>
                 </div>
               </button>
@@ -644,7 +644,7 @@ function Demo() {
                     <p className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
                       Natural Language Input
                     </p>
-                    <p className="text-sm font-medium">"{s.intent}"</p>
+                    <p className="text-sm font-medium">&quot;{s.intent}&quot;</p>
                   </div>
 
                   <div>

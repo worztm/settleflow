@@ -3,17 +3,11 @@
 import { useTheme } from "next-themes"
 import { Button } from "@/components/ui/button"
 import { Sun, Moon } from "lucide-react"
-import { useEffect, useState } from "react"
 
 export function ModeToggle() {
   const { theme, setTheme } = useTheme()
-  const [mounted, setMounted] = useState(false)
 
-  useEffect(() => {
-    setMounted(true)
-  }, [])
-
-  if (!mounted) {
+  if (!theme) {
     return (
       <Button variant="outline" size="icon" className="h-9 w-9">
         <span className="sr-only">Toggle theme</span>
