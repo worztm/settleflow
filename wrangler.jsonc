@@ -1,0 +1,41 @@
+{
+  "name": "settleflow-api",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-07-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "ENVIRONMENT": "production"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "settleflow-db",
+      "database_id": "b50e7aef-a7b6-46e0-bea5-fe6dc5f1f3a3"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "SESSIONS",
+      "id": "9731184db3694898bba3c8ccdd787121"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "queues": {
+    "producers": [
+      {
+        "queue": "settleflow-schedules",
+        "binding": "SCHEDULE_QUEUE"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "settleflow-schedules"
+      }
+    ]
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
+  }
+}
