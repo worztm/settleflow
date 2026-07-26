@@ -202,8 +202,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!user) throw new Error("Not authenticated")
     const res = await api.transactions.send(walletId, to, amount, token)
     const tx: Transaction = {
-      id: res.transaction.id, type: "send", amount, token: token || "USDC",
-      status: "pending", recipient: to, createdAt: res.transaction.createdAt || new Date().toISOString(),
+      id: res.transaction.id, txHash: res.transaction.txHash,
+      type: "send", amount, token: token || "USDC",
+      status: res.transaction.status || "pending",
+      recipient: to, memo: res.transaction.memo,
+      createdAt: res.transaction.createdAt || new Date().toISOString(),
     }
     const updated = [tx, ...transactions]
     setTransactions(updated)

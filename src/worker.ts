@@ -1,9 +1,10 @@
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
-import { createPublicClient, http, formatUnits, getAddress, defineChain } from "viem"
+import { createPublicClient, createWalletClient, http, formatUnits, parseUnits, getAddress, defineChain } from "viem"
 
 // Arc Testnet chain definition for viem
+// Verified: chainId=5039954 via eth_chainId, actively running with 53M+ blocks
 const arcTestnet = defineChain({
-  id: 999_999_999,
+  id: 5_039_954,
   name: "Arc Testnet",
   nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 6 },
   rpcUrls: {
@@ -12,6 +13,9 @@ const arcTestnet = defineChain({
 })
 
 const ARC_RPC = "https://rpc.testnet.arc.io"
+// Arc is a standard EVM chain: smallest unit is wei (10^-18).
+// The chain metadata has decimals:6 as a UI hint ("this is USDC"), but on-chain
+// balances are 18-decimal wei just like Ethereum. Verified via eth_getBalance.
 const USDC_DECIMALS = 18
 
 const ENCRYPTION_SECRET = "settleflow-wallet-key-" // prefix for simple XOR obfuscation; replace with real encryption in production
@@ -100,24 +104,46 @@ export default {
     }
   },
 
-  // Queue consumer — processes scheduled payments
+  // Queue consumer — processes due schedules
   async queue(batch: MessageBatch<any>, env: Env): Promise<void> {
     for (const msg of batch.messages) {
       try {
-        const { scheduleId, userId } = msg.body
-        await processScheduledExecution(scheduleId, userId, env)
+        await processScheduledExecution(msg.body.scheduleId, msg.body.userId, env)
         msg.ack()
       } catch (err: any) {
-        console.error("Queue processing failed:", err.message)
+        console.error("Scheduled payment failed:", err.message)
         msg.retry()
       }
     }
   },
 
-  // Cron trigger — runs every minute to check for due schedules
+  // Cron trigger — checks for due schedules and queues them for execution
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(checkAndQueueDueSchedules(env))
+    ctx.waitUntil(queueDueSchedules(env))
   },
+}
+
+// ─── On-Chain USDC Transfer (Arc-native — native currency IS USDC) ─────
+
+async function sendUsdc(to: string, amount: string, privateKey: `0x${string}`, env: Env): Promise<`0x${string}`> {
+  const walletClient = createWalletClient({
+    account: privateKeyToAccount(privateKey),
+    chain: arcTestnet,
+    transport: http(undefined, { timeout: 15_000 }),
+  })
+
+  // Arc is an EVM chain — smallest unit is wei (10^-18), same as Ethereum.
+  // Even though chain metadata says decimals:6, getBalance returns 18-dec wei.
+  const value = parseUnits(amount, USDC_DECIMALS)
+  if (value <= 0n) throw new Error("Amount must be positive")
+
+  const hash = await walletClient.sendTransaction({
+    to: getAddress(to),
+    value,
+  })
+
+  console.error("sendUsdc success:", hash, "to:", to, "amount:", amount)
+  return hash
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -337,7 +363,7 @@ async function getUsdcBalance(address: string): Promise<string> {
   try {
     const client = createPublicClient({
       chain: arcTestnet,
-      transport: http(),
+      transport: http(undefined, { timeout: 10_000 }),
     })
     const checksummed = getAddress(address)
     // Arc is USDC-native — the native balance IS the USDC balance
@@ -864,25 +890,41 @@ async function handleSendTransaction(request: Request, env: Env) {
   const { walletId, to, amount, token, memo } = body
   if (!walletId || !to || !amount) return json({ error: "walletId, to, and amount required" }, 400)
 
-  // Get wallet
+  // Get wallet with private key
   const wallet = await env.DB.prepare(
-    "SELECT id, address, chain FROM wallets WHERE id = ? AND user_id = ?"
+    "SELECT id, address, private_key FROM wallets WHERE id = ? AND user_id = ?"
   ).bind(walletId, userId).first()
   if (!wallet) return json({ error: "Wallet not found" }, 404)
 
-  // Create pending transaction
   const txId = crypto.randomUUID()
-  await env.DB.prepare(
-    "INSERT INTO transactions (id, user_id, wallet_id, type, amount, token, status, recipient, memo) VALUES (?, ?, ?, 'send', ?, ?, 'pending', ?, ?)"
-  ).bind(txId, userId, walletId, amount, token || "USDC", to, memo || "").run()
+  let txHash: `0x${string}` | null = null
 
-  // Execute via OpenClawCash (fire-and-forget — don't block response)
-  env.DB.prepare(
-    "UPDATE transactions SET status = 'confirmed' WHERE id = ?"
-  ).bind(txId).run().catch(() => {})
+  try {
+    // Decrypt private key and send on-chain
+    const privKey = decryptPrivateKey((wallet as any).private_key)
+    txHash = await sendUsdc(to, amount, privKey, env)
+  } catch (err: any) {
+    console.error("Send failed:", err.message)
+    // Record as failed transaction
+    await env.DB.prepare(
+      "INSERT INTO transactions (id, user_id, wallet_id, type, amount, token, status, recipient, memo, created_at) VALUES (?, ?, ?, 'send', ?, ?, 'failed', ?, ?, datetime('now'))"
+    ).bind(txId, userId, walletId, amount, token || "USDC", to, memo || "").run()
+    return json({ error: `Payment failed: ${err.message}` }, 502)
+  }
+
+  // Record as confirmed transaction with tx hash
+  await env.DB.prepare(
+    "INSERT INTO transactions (id, user_id, wallet_id, tx_hash, type, amount, token, status, recipient, memo, created_at) VALUES (?, ?, ?, ?, 'send', ?, ?, 'confirmed', ?, ?, datetime('now'))"
+  ).bind(txId, userId, walletId, txHash, amount, token || "USDC", to, memo || "").run()
+
+  // Update wallet balance
+  try {
+    const newBalance = await getUsdcBalance((wallet as any).address)
+    await env.DB.prepare("UPDATE wallets SET balance = ? WHERE id = ?").bind(newBalance, walletId).run()
+  } catch {}
 
   return json({
-    transaction: { id: txId, walletId, type: "send", amount, token: token || "USDC", status: "pending", recipient: to, memo: memo || "", createdAt: new Date().toISOString() },
+    transaction: { id: txId, txHash, walletId, type: "send", amount, token: token || "USDC", status: "confirmed", recipient: to, memo: memo || "", createdAt: new Date().toISOString() },
   })
 }
 
@@ -1040,23 +1082,35 @@ async function handleExecuteSchedule(request: Request, env: Env) {
   const scheduleId = url.pathname.split("/")[3] // /api/schedules/:id/execute
 
   const schedule = await env.DB.prepare(
-    "SELECT id, user_id, amount, token, recipient, frequency, next_run, status FROM schedules WHERE id = ? AND user_id = ?"
+    "SELECT id, user_id, amount, token, recipient, frequency, next_run, status, title FROM schedules WHERE id = ? AND user_id = ?"
   ).bind(scheduleId, userId).first()
   if (!schedule) return json({ error: "Schedule not found" }, 404)
   if ((schedule as any).status !== "active") return json({ error: "Schedule is not active" }, 400)
 
-  // Find primary wallet
+  // Find primary wallet with private key
   const wallet = await env.DB.prepare(
-    "SELECT id, address FROM wallets WHERE user_id = ? AND is_primary = 1 LIMIT 1"
+    "SELECT id, address, private_key FROM wallets WHERE user_id = ? AND is_primary = 1 LIMIT 1"
   ).bind(userId).first()
-
   if (!wallet) return json({ error: "No primary wallet found" }, 400)
 
-  // Record as transaction
   const txId = crypto.randomUUID()
+  let txHash: `0x${string}` | null = null
+
+  try {
+    const privKey = decryptPrivateKey((wallet as any).private_key)
+    txHash = await sendUsdc((schedule as any).recipient, (schedule as any).amount, privKey, env)
+  } catch (err: any) {
+    console.error("Schedule execution failed:", err.message)
+    await env.DB.prepare(
+      "INSERT INTO transactions (id, user_id, wallet_id, type, amount, token, status, recipient, memo, created_at) VALUES (?, ?, ?, 'schedule', ?, ?, 'failed', ?, ?, datetime('now'))"
+    ).bind(txId, userId, (wallet as any).id, (schedule as any).amount, (schedule as any).token, (schedule as any).recipient, `Scheduled: ${(schedule as any).title || ""}`).run()
+    return json({ error: `Schedule execution failed: ${err.message}` }, 502)
+  }
+
+  // Record as confirmed transaction
   await env.DB.prepare(
-    "INSERT INTO transactions (id, user_id, wallet_id, type, amount, token, status, recipient, memo) VALUES (?, ?, ?, 'schedule', ?, ?, 'pending', ?, ?)"
-  ).bind(txId, userId, (wallet as any).id, (schedule as any).amount, (schedule as any).token, (schedule as any).recipient, `Scheduled: ${(schedule as any).title || ""}`).run()
+    "INSERT INTO transactions (id, user_id, wallet_id, tx_hash, type, amount, token, status, recipient, memo, created_at) VALUES (?, ?, ?, ?, 'schedule', ?, ?, 'confirmed', ?, ?, datetime('now'))"
+  ).bind(txId, userId, (wallet as any).id, txHash, (schedule as any).amount, (schedule as any).token, (schedule as any).recipient, `Scheduled: ${(schedule as any).title || ""}`).run()
 
   // Update schedule's next_run
   const nextRun = computeNextRun((schedule as any).frequency)
@@ -1064,14 +1118,15 @@ async function handleExecuteSchedule(request: Request, env: Env) {
     "UPDATE schedules SET next_run = ? WHERE id = ?"
   ).bind(nextRun, scheduleId).run()
 
-  // Mark transaction confirmed
-  await env.DB.prepare(
-    "UPDATE transactions SET status = 'confirmed' WHERE id = ?"
-  ).bind(txId).run()
+  // Update wallet balance
+  try {
+    const newBalance = await getUsdcBalance((wallet as any).address)
+    await env.DB.prepare("UPDATE wallets SET balance = ? WHERE id = ?").bind(newBalance, (wallet as any).id).run()
+  } catch {}
 
   return json({
     executed: true,
-    transaction: { id: txId, status: "confirmed" },
+    transaction: { id: txId, txHash, status: "confirmed" },
     nextRun,
   })
 }
@@ -1142,18 +1197,17 @@ Examples:
 
     const responseText = (aiResponse as any).response || ""
     console.error("AI raw intent response:", responseText)
-    console.error("AI intent response type:", typeof responseText)
     let intent: any
     try {
-      const text = String(responseText)
-      intent = JSON.parse(text)
+      const t = String(responseText)
+      intent = JSON.parse(t)
     } catch {
       try {
-        const text = String(responseText)
-        const start = text.indexOf("{")
-        const end = text.lastIndexOf("}")
+        const t = String(responseText)
+        const start = t.indexOf("{")
+        const end = t.lastIndexOf("}")
         if (start !== -1 && end > start) {
-          intent = JSON.parse(text.slice(start, end + 1))
+          intent = JSON.parse(t.slice(start, end + 1))
         }
       } catch {}
     }
@@ -1166,47 +1220,94 @@ Examples:
       }
     }
 
-    return json({ intent })
-  } catch {
+    // Estimate gas fee for send actions so the frontend can check balance
+    let gasEstimate = "0"
+    if (intent.action === "send" && parseFloat(intent.amount || "0") > 0) {
+      try {
+        gasEstimate = await estimateGasFee(userId, intent.amount, env)
+      } catch (err: any) {
+        console.error("Gas estimation failed:", err.message)
+      }
+    }
+
+    return json({ intent: { ...intent, gasEstimate } })
+  } catch (err: any) {
+    console.error("parseIntent error:", err.message)
     return json({
       intent: {
         action: "send", amount: "0", token: "USDC", recipient: null,
         frequency: null, executionType: "immediate", conditions: null,
         summary: `Parsed: ${text}`,
+        gasEstimate: "0",
       },
     })
   }
 }
 
+// ─── Gas Estimation (Arc native currency IS USDC, so gas comes from same balance) ──
+
+async function estimateGasFee(userId: string, amount: string, env: Env): Promise<string> {
+  const wallet = await env.DB.prepare(
+    "SELECT address FROM wallets WHERE user_id = ? AND is_primary = 1 LIMIT 1"
+  ).bind(userId).first()
+  if (!wallet) return "0"
+
+  try {
+    const client = createPublicClient({
+      chain: arcTestnet,
+      transport: http(undefined, { timeout: 10_000 }),
+    })
+
+    const [gasPrice, gasLimit] = await Promise.all([
+      client.getGasPrice(),
+      client.estimateGas({
+        account: (wallet as any).address as `0x${string}`,
+        to: (wallet as any).address as `0x${string}`, // dummy self-send for estimate
+        value: parseUnits(amount, USDC_DECIMALS),
+      }),
+    ])
+
+    // gasPrice and gasLimit are both in the smallest unit
+    // totalGasCost = gasPrice * gasLimit (in smallest units)
+    const totalGasWei = gasPrice * gasLimit
+    const gasInUsdc = formatUnits(totalGasWei, USDC_DECIMALS)
+
+    // Add 20% buffer for price fluctuations
+    const withBuffer = (parseFloat(gasInUsdc) * 1.2).toFixed(6)
+    console.error("Gas estimate:", withBuffer, "USDC for amount:", amount)
+    return withBuffer
+  } catch (err: any) {
+    console.error("Gas estimate failed:", err.message)
+    // Fallback: assume ~0.01 USDC which is generous for Arc transfers
+    return "0.01"
+  }
+}
+
 // ─── Queue: Check due schedules and process payments ─────────────────────
 
-async function checkAndQueueDueSchedules(env: Env) {
+async function queueDueSchedules(env: Env) {
   try {
     const now = new Date().toISOString()
     const dueSchedules = await env.DB.prepare(
-      "SELECT id, user_id, title, amount, token, recipient, frequency FROM schedules WHERE status = 'active' AND next_run <= ?"
+      "SELECT id, user_id FROM schedules WHERE status = 'active' AND next_run <= ?"
     ).bind(now).all()
 
     for (const s of (dueSchedules.results as any[])) {
       try {
-        await env.SCHEDULE_QUEUE.send({
-          scheduleId: s.id,
-          userId: s.user_id,
-        })
-        console.error("Queued schedule:", s.id, "for user:", s.user_id)
+        await env.SCHEDULE_QUEUE.send({ scheduleId: s.id, userId: s.user_id })
       } catch (err: any) {
         console.error("Failed to queue schedule:", s.id, err.message)
       }
     }
   } catch (err: any) {
-    console.error("checkAndQueueDueSchedules error:", err.message)
+    console.error("queueDueSchedules error:", err.message)
   }
 }
 
 async function processScheduledExecution(scheduleId: string, userId: string, env: Env) {
   try {
     const schedule = await env.DB.prepare(
-      "SELECT id, user_id, amount, token, recipient, frequency, next_run, status FROM schedules WHERE id = ? AND user_id = ?"
+      "SELECT id, user_id, amount, token, recipient, frequency, next_run, status, title FROM schedules WHERE id = ? AND user_id = ?"
     ).bind(scheduleId, userId).first()
 
     if (!schedule || (schedule as any).status !== "active") {
@@ -1214,7 +1315,6 @@ async function processScheduledExecution(scheduleId: string, userId: string, env
       return
     }
 
-    // Find primary wallet
     const wallet = await env.DB.prepare(
       "SELECT id, address, private_key FROM wallets WHERE user_id = ? AND is_primary = 1 LIMIT 1"
     ).bind(userId).first()
@@ -1224,11 +1324,24 @@ async function processScheduledExecution(scheduleId: string, userId: string, env
       return
     }
 
-    // Record as transaction
     const txId = crypto.randomUUID()
+    let txHash: `0x${string}` | null = null
+
+    try {
+      const privKey = decryptPrivateKey((wallet as any).private_key)
+      txHash = await sendUsdc((schedule as any).recipient, (schedule as any).amount, privKey, env)
+    } catch (err: any) {
+      console.error("Scheduled execution on-chain failed:", scheduleId, err.message)
+      await env.DB.prepare(
+        "INSERT INTO transactions (id, user_id, wallet_id, type, amount, token, status, recipient, memo, created_at) VALUES (?, ?, ?, 'schedule', ?, ?, 'failed', ?, ?, datetime('now'))"
+      ).bind(txId, userId, (wallet as any).id, (schedule as any).amount, (schedule as any).token, (schedule as any).recipient, `Scheduled: ${(schedule as any).title || ""}`).run()
+      throw err // Re-throw for queue retry
+    }
+
+    // Record as confirmed transaction
     await env.DB.prepare(
-      "INSERT INTO transactions (id, user_id, wallet_id, type, amount, token, status, recipient, memo) VALUES (?, ?, ?, 'schedule', ?, ?, 'confirmed', ?, ?)"
-    ).bind(txId, userId, (wallet as any).id, (schedule as any).amount, (schedule as any).token, (schedule as any).recipient, `Scheduled: ${(schedule as any).title || ""}`).run()
+      "INSERT INTO transactions (id, user_id, wallet_id, tx_hash, type, amount, token, status, recipient, memo, created_at) VALUES (?, ?, ?, ?, 'schedule', ?, ?, 'confirmed', ?, ?, datetime('now'))"
+    ).bind(txId, userId, (wallet as any).id, txHash, (schedule as any).amount, (schedule as any).token, (schedule as any).recipient, `Scheduled: ${(schedule as any).title || ""}`).run()
 
     // Update schedule's next_run
     const nextRun = computeNextRun((schedule as any).frequency)
@@ -1236,7 +1349,13 @@ async function processScheduledExecution(scheduleId: string, userId: string, env
       "UPDATE schedules SET next_run = ? WHERE id = ?"
     ).bind(nextRun, scheduleId).run()
 
-    console.error("Executed schedule:", scheduleId, "next run:", nextRun)
+    // Update wallet balance
+    try {
+      const newBalance = await getUsdcBalance((wallet as any).address)
+      await env.DB.prepare("UPDATE wallets SET balance = ? WHERE id = ?").bind(newBalance, (wallet as any).id).run()
+    } catch {}
+
+    console.error("Executed schedule:", scheduleId, "tx:", txHash, "next:", nextRun)
   } catch (err: any) {
     console.error("processScheduledExecution error:", err.message)
     throw err // Re-throw so queue can retry

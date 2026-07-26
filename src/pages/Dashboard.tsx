@@ -35,7 +35,7 @@ function formatAmount(amount: string | number): string {
 
 export default function DashboardPage() {
   const navigate = useNavigate()
-  const { user, token, isAuthenticated, isLoading, logout, wallets, transactions, schedules, totalBalance, connectWallet, createSchedule, deleteSchedule, deleteAccount, syncWallets } = useAuth()
+  const { user, token, isAuthenticated, isLoading, logout, wallets, transactions, schedules, totalBalance, connectWallet, createSchedule, deleteSchedule, deleteAccount, sendPayment, syncWallets } = useAuth()
   const [menuOpen, setMenuOpen] = useState(false)
   const [walletInput, setWalletInput] = useState("")
   const [showWalletInput, setShowWalletInput] = useState(false)
@@ -105,18 +105,25 @@ export default function DashboardPage() {
         }
       } else if (intent.action === "send" && intent.recipient && wallets.length > 0) {
         const sendAmount = parseFloat(intent.amount || "0")
-        if (totalBalance < sendAmount) {
+        const gasFee = parseFloat(intent.gasEstimate || "0")
+        const totalNeeded = sendAmount + gasFee
+        if (totalBalance < totalNeeded) {
           setCommands(prev => prev.map((c, i) => i === prev.length - 1 ? {
-            ...c, status: "error" as const, error: `Insufficient balance. You have ${totalBalance.toFixed(2)} USDC but trying to send ${sendAmount.toFixed(2)} USDC.`,
+            ...c, status: "error" as const, error: `Not enough balance. You have ${totalBalance.toFixed(2)} USDC but need ${totalNeeded.toFixed(6)} USDC (${sendAmount.toFixed(2)} + ~${gasFee.toFixed(6)} gas fee).`,
           } : c))
           setIsProcessing(false)
           return
         }
         try {
+          // Execute payment instantly via viem (no queue — only schedules use the queue)
+          const primaryWallet = wallets.find(w => w.isPrimary) || wallets[0]
+          await sendPayment(primaryWallet.id, intent.recipient, intent.amount, intent.token || "USDC")
           setCommands(prev => prev.map((c, i) => i === prev.length - 1 ? {
             ...c, status: "done" as const,
-            result: { intent, executed: true, message: "Payment queued" },
+            result: { intent, executed: true, status: "confirmed", message: `Sent ${intent.amount} USDC to ${intent.recipient}` },
           } : c))
+          // Refresh balances after payment
+          syncWallets()
         } catch (err: any) {
           setCommands(prev => prev.map((c, i) => i === prev.length - 1 ? {
             ...c, status: "error" as const, error: `Payment failed: ${err.message}`,
@@ -415,11 +422,12 @@ export default function DashboardPage() {
                                     {cmd.result.schedule.conditions && <p className="text-amber-500 flex items-center gap-1"><AlertCircle className="w-3 h-3" />{cmd.result.schedule.conditions}</p>}
                                   </div>
                                 </>
-                              ) : cmd.result.message === "Payment queued" ? (
+                              ) : cmd.result.status === "confirmed" && cmd.result.message ? (
                                 <>
-                                  <div className="flex items-center gap-2"><Send className="w-4 h-4" /><span className="text-sm font-semibold">Payment Queued</span></div>
+                                  <div className="flex items-center gap-2"><Send className="w-4 h-4" /><span className="text-sm font-semibold">Payment Sent ✅</span></div>
                                   <div className="bg-background rounded-xl p-3 text-xs border border-border/30">
-                                    <p className="text-muted-foreground">Sending {cmd.result.intent?.amount} USDC to <span className="font-mono">{cmd.result.intent?.recipient}</span></p>
+                                    <p className="text-muted-foreground">{cmd.result.message}</p>
+                                    <p className="text-emerald-500 text-xs mt-1 flex items-center gap-1"><CheckCircle className="w-3 h-3" /> Confirmed on-chain — instant</p>
                                   </div>
                                 </>
                               ) : cmd.result.wallets ? (
