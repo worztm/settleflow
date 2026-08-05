@@ -95,6 +95,19 @@ export default {
       if (path.match(/^\/api\/schedules\/[\w-]+\/execute$/) && request.method === "POST") return handleExecuteSchedule(request, env)
       if (path.match(/^\/api\/schedules\/[\w-]+$/) && request.method === "DELETE") return handleDeleteSchedule(request, env)
 
+      // Payees (employees, vendors, contractors, ...)
+      if (path === "/api/payees" && request.method === "GET") return handleGetPayees(request, env)
+      if (path === "/api/payees" && request.method === "POST") return handleCreatePayee(request, env)
+      if (path.match(/^\/api\/payees\/[\w-]+$/) && request.method === "PATCH") return handleUpdatePayee(request, env)
+      if (path.match(/^\/api\/payees\/[\w-]+$/) && request.method === "DELETE") return handleDeletePayee(request, env)
+
+      // Payment plans (salary, bonus, ... recurring payouts)
+      if (path === "/api/plans" && request.method === "GET") return handleGetPlans(request, env)
+      if (path === "/api/plans" && request.method === "POST") return handleCreatePlan(request, env)
+      if (path.match(/^\/api\/plans\/[\w-]+\/execute$/) && request.method === "POST") return handleExecutePlan(request, env)
+      if (path.match(/^\/api\/plans\/[\w-]+$/) && request.method === "PATCH") return handleUpdatePlan(request, env)
+      if (path.match(/^\/api\/plans\/[\w-]+$/) && request.method === "DELETE") return handleDeletePlan(request, env)
+
       // AI
       if (path === "/api/ai/parse-intent" && request.method === "POST") return handleAIParseIntent(request, env)
 
@@ -104,11 +117,15 @@ export default {
     }
   },
 
-  // Queue consumer — processes due schedules
+  // Queue consumer — processes due schedules & recurring payment plans
   async queue(batch: MessageBatch<any>, env: Env): Promise<void> {
     for (const msg of batch.messages) {
       try {
-        await processScheduledExecution(msg.body.scheduleId, msg.body.userId, env)
+        if (msg.body.planId) {
+          await processPlanExecution(msg.body.planId, msg.body.userId, env)
+        } else {
+          await processScheduledExecution(msg.body.scheduleId, msg.body.userId, env)
+        }
         msg.ack()
       } catch (err: any) {
         console.error("Scheduled payment failed:", err.message)
@@ -708,6 +725,8 @@ async function handleDeleteAccount(request: Request, env: Env) {
   // Delete all user data
   await env.DB.prepare("DELETE FROM transactions WHERE user_id = ?").bind(userId).run()
   await env.DB.prepare("DELETE FROM schedules WHERE user_id = ?").bind(userId).run()
+  await env.DB.prepare("DELETE FROM payment_plans WHERE user_id = ?").bind(userId).run()
+  await env.DB.prepare("DELETE FROM payees WHERE user_id = ?").bind(userId).run()
   await env.DB.prepare("DELETE FROM wallets WHERE user_id = ?").bind(userId).run()
   await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(userId).run()
 
@@ -1283,7 +1302,7 @@ async function estimateGasFee(userId: string, amount: string, env: Env): Promise
   }
 }
 
-// ─── Queue: Check due schedules and process payments ─────────────────────
+// ─── Queue: Check due schedules & payment plans, then process payments ──
 
 async function queueDueSchedules(env: Env) {
   try {
@@ -1297,6 +1316,19 @@ async function queueDueSchedules(env: Env) {
         await env.SCHEDULE_QUEUE.send({ scheduleId: s.id, userId: s.user_id })
       } catch (err: any) {
         console.error("Failed to queue schedule:", s.id, err.message)
+      }
+    }
+
+    // Recurring payment plans that are due
+    const duePlans = await env.DB.prepare(
+      "SELECT id, user_id FROM payment_plans WHERE status = 'active' AND next_run IS NOT NULL AND next_run <= ?"
+    ).bind(now).all()
+
+    for (const p of (duePlans.results as any[])) {
+      try {
+        await env.SCHEDULE_QUEUE.send({ planId: p.id, userId: p.user_id })
+      } catch (err: any) {
+        console.error("Failed to queue payment plan:", p.id, err.message)
       }
     }
   } catch (err: any) {
@@ -1359,6 +1391,491 @@ async function processScheduledExecution(scheduleId: string, userId: string, env
   } catch (err: any) {
     console.error("processScheduledExecution error:", err.message)
     throw err // Re-throw so queue can retry
+  }
+}
+
+// ─── Recurring Payment Plan (payroll) Execution ────────────────────────────
+
+const PLAN_FREQUENCIES = ["once", "daily", "weekly", "bi-weekly", "monthly", "quarterly", "yearly"]
+
+// payDay semantics:
+//   weekly                         -> 0-6 (0 = Sunday .. 6 = Saturday)
+//   monthly / quarterly / yearly   -> 1-31 (day of month, clamped to month length)
+//   once / daily / bi-weekly       -> ignored (not required)
+//
+// `at` is the previous scheduled slot (the next_run that just fired). When rolling
+// forward after an execution we anchor on it (+period) so a queue that processes
+// late never shifts the payday cadence. When `at` is omitted (plan creation or
+// resume), we compute the next occurrence from the plan's series against now.
+function computePlanNextRun(frequency: string, payDay: number | null, startDate?: string | null, at?: string | null): string | null {
+  const now = new Date()
+  const start = startDate ? new Date(startDate) : null
+  const hasStart = !!start && !isNaN(start.getTime())
+  const anchor = at ? new Date(at) : null
+  const hasAnchor = !!anchor && !isNaN(anchor.getTime())
+
+  if (frequency === "once") {
+    // One-time payout fires on the chosen date (or immediately when none is set)
+    if (!hasStart || start!.getTime() <= now.getTime()) return now.toISOString()
+    return start!.toISOString()
+  }
+
+  // Keep the time-of-day of the first payment so payouts happen at the same hour
+  const hour = hasAnchor ? anchor!.getHours() : hasStart ? start!.getHours() : 9
+  const minute = hasAnchor ? anchor!.getMinutes() : hasStart ? start!.getMinutes() : 0
+
+  if (frequency === "daily") {
+    const base = hasAnchor ? anchor! : now
+    const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + 1, hour, minute, 0, 0)
+    return d.toISOString()
+  }
+
+  if (frequency === "bi-weekly") {
+    // Fires on the same weekday as the first payment, every 14 days. Anchored runs
+    // simply add 14 days to the previous slot so late processing never drifts.
+    const base = hasAnchor ? anchor! : now
+    const d = hasAnchor
+      ? new Date(base.getFullYear(), base.getMonth(), base.getDate() + 14, hour, minute, 0, 0)
+      : new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0)
+    if (!hasAnchor) {
+      const baseDow = hasStart ? start!.getDay() : now.getDay()
+      let diff = (baseDow - d.getDay() + 7) % 7
+      d.setDate(d.getDate() + diff)
+      if (d.getTime() <= now.getTime()) d.setDate(d.getDate() + 14)
+    }
+    return d.toISOString()
+  }
+
+  if (frequency === "weekly") {
+    if (hasAnchor) {
+      const d = new Date(anchor!.getFullYear(), anchor!.getMonth(), anchor!.getDate() + 7, hour, minute, 0, 0)
+      return d.toISOString()
+    }
+    const targetDow = payDay ?? (hasStart ? start!.getDay() : now.getDay())
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0)
+    let diff = (targetDow - d.getDay() + 7) % 7
+    if (diff === 0) diff = 7 // always move to the *next* occurrence
+    d.setDate(d.getDate() + diff)
+    return d.toISOString()
+  }
+
+  // monthly / quarterly / yearly — day-of-month based, aligned to the start month
+  const targetDom = payDay ?? (hasStart ? start!.getDate() : now.getDate())
+  const baseMonth = hasAnchor ? anchor!.getMonth() : hasStart ? start!.getMonth() : now.getMonth()
+  const baseYear = hasAnchor ? anchor!.getFullYear() : hasStart ? start!.getFullYear() : now.getFullYear()
+  const stepMonths = frequency === "quarterly" ? 3 : frequency === "yearly" ? 12 : 1
+  // The next slot must be strictly after the previous slot (anchor); when there is
+  // no anchor (fresh plan / resume) it must be after now.
+  const after = hasAnchor ? anchor!.getTime() : now.getTime()
+
+  let candidate = new Date(baseYear, baseMonth, 1)
+  for (;;) {
+    const lastDay = new Date(candidate.getFullYear(), candidate.getMonth() + 1, 0).getDate()
+    const day = Math.min(Math.max(1, targetDom), lastDay)
+    const d = new Date(candidate.getFullYear(), candidate.getMonth(), day, hour, minute, 0, 0)
+    if (d.getTime() > after) return d.toISOString()
+    candidate = new Date(candidate.getFullYear(), candidate.getMonth() + stepMonths, 1)
+  }
+}
+
+// Executes a payment plan on-chain and rolls it forward (shared by the queue consumer
+// and the manual "Pay now" endpoint). Compatible with Arc's native-USDC transfers.
+async function executePlanOnChain(plan: any, payee: any, env: Env): Promise<{ txHash: `0x${string}`; txId: string }> {
+  // Source wallet: prefer the plan's wallet, else the user's primary wallet
+  let wallet: any
+  if ((plan as any).source_wallet_id) {
+    wallet = await env.DB.prepare(
+      "SELECT id, address, private_key FROM wallets WHERE id = ? AND user_id = ?"
+    ).bind((plan as any).source_wallet_id, plan.user_id).first()
+  }
+  if (!wallet) {
+    wallet = await env.DB.prepare(
+      "SELECT id, address, private_key FROM wallets WHERE user_id = ? AND is_primary = 1 LIMIT 1"
+    ).bind(plan.user_id).first()
+  }
+  if (!wallet) {
+    throw new Error("No wallet found for this payment. Create a wallet first.")
+  }
+
+  const txId = crypto.randomUUID()
+  const memo = `${plan.purpose} — ${payee.name}`
+
+  let txHash: `0x${string}` | null = null
+  try {
+    const privKey = decryptPrivateKey((wallet as any).private_key)
+    txHash = await sendUsdc((payee as any).wallet_address, (plan as any).amount, privKey, env)
+  } catch (err: any) {
+    console.error("Plan execution on-chain failed:", plan.id, err.message)
+    await env.DB.prepare(
+      "INSERT INTO transactions (id, user_id, wallet_id, type, amount, token, status, recipient, memo, created_at) VALUES (?, ?, ?, 'payroll', ?, ?, 'failed', ?, ?, datetime('now'))"
+    ).bind(txId, plan.user_id, (wallet as any).id, (plan as any).amount, (plan as any).token || "USDC", (payee as any).wallet_address, memo).run()
+    throw err
+  }
+
+  await env.DB.prepare(
+    "INSERT INTO transactions (id, user_id, wallet_id, tx_hash, type, amount, token, status, recipient, memo, created_at) VALUES (?, ?, ?, ?, 'payroll', ?, ?, 'confirmed', ?, ?, datetime('now'))"
+  ).bind(txId, plan.user_id, (wallet as any).id, txHash, (plan as any).amount, (plan as any).token || "USDC", (payee as any).wallet_address, memo).run()
+
+  // Refresh the wallet balance
+  try {
+    const newBalance = await getUsdcBalance((wallet as any).address)
+    await env.DB.prepare("UPDATE wallets SET balance = ? WHERE id = ?").bind(newBalance, (wallet as any).id).run()
+  } catch {}
+
+  return { txHash, txId }
+}
+
+async function processPlanExecution(planId: string, userId: string, env: Env) {
+  try {
+    const plan = await env.DB.prepare(
+      "SELECT id, user_id, payee_id, purpose, amount, token, frequency, pay_day, start_date, next_run, status, source_wallet_id FROM payment_plans WHERE id = ? AND user_id = ?"
+    ).bind(planId, userId).first()
+
+    if (!plan || (plan as any).status !== "active") {
+      console.error("Plan not found or not active:", planId)
+      return
+    }
+
+    const payee = await env.DB.prepare(
+      "SELECT id, name, wallet_address FROM payees WHERE id = ? AND user_id = ?"
+    ).bind((plan as any).payee_id, userId).first()
+
+    if (!payee) {
+      console.error("Payee not found for plan:", planId)
+      return
+    }
+
+    await executePlanOnChain(plan, payee, env)
+
+    // Roll the plan forward
+    if ((plan as any).frequency === "once") {
+      await env.DB.prepare(
+        "UPDATE payment_plans SET status = 'completed', next_run = NULL WHERE id = ?"
+      ).bind(planId).run()
+    } else {
+      // Anchor on the slot that just fired so late processing never drifts the payday
+      const nextRun = computePlanNextRun((plan as any).frequency, (plan as any).pay_day, (plan as any).start_date, (plan as any).next_run)
+      await env.DB.prepare(
+        "UPDATE payment_plans SET next_run = ? WHERE id = ?"
+      ).bind(nextRun, planId).run()
+    }
+
+    console.error("Executed plan:", planId, "tx:", "OK", "next:", (plan as any).frequency)
+  } catch (err: any) {
+    console.error("processPlanExecution error:", err.message)
+    throw err // Re-throw so queue can retry
+  }
+}
+
+// ─── Payees (employees, vendors, contractors, ...) ────────────────────────
+
+// Accepts Arc-style addresses (0x…) or handle-style IDs (alice.arc). Payments
+// require a real 0x address to settle on-chain, handles surface a clear error.
+function isValidWalletAddress(addr: string): boolean {
+  const t = addr.trim()
+  if (/^0x[a-fA-F0-9]{40}$/.test(t)) return true
+  if (/^[a-zA-Z0-9._-]{1,64}\.arc$/.test(t)) return true
+  return false
+}
+
+function mapPayeeRow(p: any): any {
+  return {
+    id: p.id, name: p.name, walletAddress: p.wallet_address,
+    category: p.category, notes: p.notes, createdAt: p.created_at,
+  }
+}
+
+function mapPlanRow(pl: any): any {
+  return {
+    id: pl.id, payeeId: pl.payee_id, purpose: pl.purpose, amount: pl.amount,
+    token: pl.token, frequency: pl.frequency, payDay: pl.pay_day,
+    startDate: pl.start_date, nextRun: pl.next_run, status: pl.status,
+    sourceWalletId: pl.source_wallet_id, createdAt: pl.created_at,
+  }
+}
+
+async function handleGetPayees(request: Request, env: Env) {
+  const userId = await getUserId(request, env)
+  if (!userId) return json({ error: "Unauthorized" }, 401)
+
+  const payees = await env.DB.prepare(
+    "SELECT id, name, wallet_address, category, notes, created_at FROM payees WHERE user_id = ? ORDER BY created_at DESC"
+  ).bind(userId).all()
+  const plans = await env.DB.prepare(
+    "SELECT id, payee_id, purpose, amount, token, frequency, pay_day, start_date, next_run, status, source_wallet_id, created_at FROM payment_plans WHERE user_id = ? ORDER BY created_at DESC"
+  ).bind(userId).all()
+
+  const byPayee = new Map<string, any[]>()
+  for (const pl of (plans.results as any[])) {
+    if (!byPayee.has(pl.payee_id)) byPayee.set(pl.payee_id, [])
+    byPayee.get(pl.payee_id)!.push(mapPlanRow(pl))
+  }
+
+  return json({
+    payees: (payees.results as any[]).map((p) => ({ ...mapPayeeRow(p), plans: byPayee.get(p.id) || [] })),
+  })
+}
+
+async function handleCreatePayee(request: Request, env: Env) {
+  const userId = await getUserId(request, env)
+  if (!userId) return json({ error: "Unauthorized" }, 401)
+  let body: any
+  try { body = await request.json() } catch { return json({ error: "Invalid JSON" }, 400) }
+  const { name, walletAddress, category, notes } = body
+
+  if (!name || !walletAddress) return json({ error: "Name and wallet address are required" }, 400)
+  if (!isValidWalletAddress(walletAddress)) {
+    return json({ error: "Invalid wallet address. Use a 0x… address or a name.arc handle." }, 400)
+  }
+
+  const id = crypto.randomUUID()
+  await env.DB.prepare(
+    "INSERT INTO payees (id, user_id, name, wallet_address, category, notes) VALUES (?, ?, ?, ?, ?, ?)"
+  ).bind(id, userId, name.trim(), walletAddress.trim(), (category || "Employee").trim(), notes || null).run()
+
+  return json({ payee: { ...mapPayeeRow({ id, name: name.trim(), wallet_address: walletAddress.trim(), category: (category || "Employee").trim(), notes: notes || null, created_at: new Date().toISOString() }), plans: [] } })
+}
+
+async function handleUpdatePayee(request: Request, env: Env) {
+  const userId = await getUserId(request, env)
+  if (!userId) return json({ error: "Unauthorized" }, 401)
+  const id = request.url.split("/").pop()!
+
+  const existing = await env.DB.prepare("SELECT id FROM payees WHERE id = ? AND user_id = ?").bind(id, userId).first()
+  if (!existing) return json({ error: "Payee not found" }, 404)
+
+  let body: any
+  try { body = await request.json() } catch { return json({ error: "Invalid JSON" }, 400) }
+
+  const fields: Record<string, string> = {}
+  if (body.name !== undefined) {
+    if (!String(body.name).trim()) return json({ error: "Name cannot be empty" }, 400)
+    fields.name = String(body.name).trim()
+  }
+  if (body.walletAddress !== undefined) {
+    if (!isValidWalletAddress(body.walletAddress)) return json({ error: "Invalid wallet address" }, 400)
+    fields.wallet_address = String(body.walletAddress).trim()
+  }
+  if (body.category !== undefined) fields.category = String(body.category).trim() || "Employee"
+  if (body.notes !== undefined) fields.notes = body.notes ? String(body.notes) : ""
+
+  const keys = Object.keys(fields)
+  if (keys.length === 0) return json({ payee: null, error: "Nothing to update" }, 400)
+  await env.DB.prepare(
+    `UPDATE payees SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ? AND user_id = ?`
+  ).bind(...keys.map((k) => fields[k]), id, userId).run()
+
+  const payee = await env.DB.prepare(
+    "SELECT id, name, wallet_address, category, notes, created_at FROM payees WHERE id = ? AND user_id = ?"
+  ).bind(id, userId).first()
+  const plans = await env.DB.prepare(
+    "SELECT id, payee_id, purpose, amount, token, frequency, pay_day, start_date, next_run, status, source_wallet_id, created_at FROM payment_plans WHERE user_id = ? AND payee_id = ? ORDER BY created_at DESC"
+  ).bind(userId, id).all()
+
+  return json({ payee: { ...mapPayeeRow(payee), plans: (plans.results as any[]).map(mapPlanRow) } })
+}
+
+async function handleDeletePayee(request: Request, env: Env) {
+  const userId = await getUserId(request, env)
+  if (!userId) return json({ error: "Unauthorized" }, 401)
+  const id = request.url.split("/").pop()!
+
+  const payee = await env.DB.prepare("SELECT id FROM payees WHERE id = ? AND user_id = ?").bind(id, userId).first()
+  if (!payee) return json({ error: "Payee not found" }, 404)
+
+  await env.DB.prepare("DELETE FROM payment_plans WHERE payee_id = ? AND user_id = ?").bind(id, userId).run()
+  await env.DB.prepare("DELETE FROM payees WHERE id = ? AND user_id = ?").bind(id, userId).run()
+
+  return json({ success: true, message: "Payee deleted" })
+}
+
+// ─── Payment Plans (recurring payouts) ─────────────────────────────────────
+
+async function handleGetPlans(request: Request, env: Env) {
+  const userId = await getUserId(request, env)
+  if (!userId) return json({ error: "Unauthorized" }, 401)
+
+  const plans = await env.DB.prepare(
+    "SELECT id, payee_id, purpose, amount, token, frequency, pay_day, start_date, next_run, status, source_wallet_id, created_at FROM payment_plans WHERE user_id = ? ORDER BY created_at DESC"
+  ).bind(userId).all()
+
+  return json({ plans: (plans.results as any[]).map(mapPlanRow) })
+}
+
+async function handleCreatePlan(request: Request, env: Env) {
+  const userId = await getUserId(request, env)
+  if (!userId) return json({ error: "Unauthorized" }, 401)
+  let body: any
+  try { body = await request.json() } catch { return json({ error: "Invalid JSON" }, 400) }
+  const { payeeId, purpose, amount, token, frequency, payDay, startDate, sourceWalletId } = body
+
+  if (!payeeId || !amount) return json({ error: "Payee and amount are required" }, 400)
+  const payee = await env.DB.prepare("SELECT id FROM payees WHERE id = ? AND user_id = ?").bind(payeeId, userId).first()
+  if (!payee) return json({ error: "Payee not found" }, 404)
+
+  const freq = (frequency || "monthly") as string
+  if (!PLAN_FREQUENCIES.includes(freq)) {
+    return json({ error: `Invalid frequency. Choose one of: ${PLAN_FREQUENCIES.join(", ")}` }, 400)
+  }
+  const num = parseFloat(amount)
+  if (isNaN(num) || num <= 0) return json({ error: "Amount must be a positive number" }, 400)
+
+  if (sourceWalletId) {
+    const wallet = await env.DB.prepare("SELECT id FROM wallets WHERE id = ? AND user_id = ?").bind(sourceWalletId, userId).first()
+    if (!wallet) return json({ error: "Source wallet not found" }, 400)
+  }
+
+  const id = crypto.randomUUID()
+  const payDayClean = (payDay === undefined || payDay === null || payDay === "") ? null : parseInt(payDay)
+  const nextRun = computePlanNextRun(freq, payDayClean, startDate || null)
+
+  await env.DB.prepare(
+    "INSERT INTO payment_plans (id, user_id, payee_id, purpose, amount, token, frequency, pay_day, start_date, next_run, status, source_wallet_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)"
+  ).bind(
+    id, userId, payeeId, (purpose || "Salary").trim(), (Number(num).toFixed(2)), token || "USDC",
+    freq, payDayClean, startDate || null, nextRun, sourceWalletId || null
+  ).run()
+
+  return json({
+    plan: mapPlanRow({
+      id, payee_id: payeeId, purpose: (purpose || "Salary").trim(), amount: Number(num).toFixed(2),
+      token: token || "USDC", frequency: freq, pay_day: payDayClean, start_date: startDate || null,
+      next_run: nextRun, status: "active", source_wallet_id: sourceWalletId || null,
+      created_at: new Date().toISOString(),
+    }),
+  })
+}
+
+async function handleUpdatePlan(request: Request, env: Env) {
+  const userId = await getUserId(request, env)
+  if (!userId) return json({ error: "Unauthorized" }, 401)
+  const id = request.url.split("/").pop()!
+
+  const existing = await env.DB.prepare(
+    "SELECT id, frequency, pay_day, start_date, status FROM payment_plans WHERE id = ? AND user_id = ?"
+  ).bind(id, userId).first()
+  if (!existing) return json({ error: "Payment plan not found" }, 404)
+
+  let body: any
+  try { body = await request.json() } catch { return json({ error: "Invalid JSON" }, 400) }
+
+  const fields: Record<string, any> = {}
+  let frequency = (existing as any).frequency as string
+  let payDay = (existing as any).pay_day as number | null
+  let startDate = (existing as any).start_date as string | null
+
+  if (body.purpose !== undefined) fields.purpose = String(body.purpose).trim() || "Salary"
+  if (body.amount !== undefined) {
+    const num = parseFloat(body.amount)
+    if (isNaN(num) || num <= 0) return json({ error: "Amount must be a positive number" }, 400)
+    fields.amount = Number(num).toFixed(2)
+  }
+  if (body.frequency !== undefined) {
+    if (!PLAN_FREQUENCIES.includes(body.frequency)) {
+      return json({ error: `Invalid frequency. Choose one of: ${PLAN_FREQUENCIES.join(", ")}` }, 400)
+    }
+    frequency = body.frequency
+    fields.frequency = frequency
+  }
+  if (body.payDay !== undefined && body.payDay !== null && body.payDay !== "") {
+    payDay = parseInt(body.payDay)
+    fields.pay_day = payDay
+  } else if (body.payDay === null || body.payDay === "") {
+    payDay = null
+    fields.pay_day = null
+  }
+  if (body.startDate !== undefined) {
+    startDate = body.startDate || null
+    fields.start_date = startDate
+  }
+  if (body.sourceWalletId !== undefined) {
+    if (body.sourceWalletId) {
+      const wallet = await env.DB.prepare("SELECT id FROM wallets WHERE id = ? AND user_id = ?").bind(body.sourceWalletId, userId).first()
+      if (!wallet) return json({ error: "Source wallet not found" }, 400)
+    }
+    fields.source_wallet_id = body.sourceWalletId || null
+  }
+  if (body.status !== undefined) {
+    if (!["active", "paused", "completed"].includes(body.status)) {
+      return json({ error: "Invalid status" }, 400)
+    }
+    fields.status = body.status
+  }
+
+  const keys = Object.keys(fields)
+  if (keys.length === 0) return json({ error: "Nothing to update" }, 400)
+  await env.DB.prepare(
+    `UPDATE payment_plans SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ? AND user_id = ?`
+  ).bind(...keys.map((k) => fields[k]), id, userId).run()
+
+  // If the plan became active again, roll forward the next run
+  if (fields.status === "active" && fields.status !== (existing as any).status) {
+    const nextRun = computePlanNextRun(frequency, payDay, startDate)
+    await env.DB.prepare("UPDATE payment_plans SET next_run = ? WHERE id = ?").bind(nextRun, id).run()
+  }
+
+  const plan = await env.DB.prepare(
+    "SELECT id, payee_id, purpose, amount, token, frequency, pay_day, start_date, next_run, status, source_wallet_id, created_at FROM payment_plans WHERE id = ? AND user_id = ?"
+  ).bind(id, userId).first()
+  return json({ plan: mapPlanRow(plan) })
+}
+
+async function handleDeletePlan(request: Request, env: Env) {
+  const userId = await getUserId(request, env)
+  if (!userId) return json({ error: "Unauthorized" }, 401)
+  const id = request.url.split("/").pop()!
+
+  const plan = await env.DB.prepare("SELECT id FROM payment_plans WHERE id = ? AND user_id = ?").bind(id, userId).first()
+  if (!plan) return json({ error: "Payment plan not found" }, 404)
+
+  await env.DB.prepare("DELETE FROM payment_plans WHERE id = ? AND user_id = ?").bind(id, userId).run()
+  return json({ success: true, message: "Payment plan deleted" })
+}
+
+// Manual "Pay now" — executes the plan immediately and synchronously returns the tx hash
+async function handleExecutePlan(request: Request, env: Env) {
+  const userId = await getUserId(request, env)
+  if (!userId) return json({ error: "Unauthorized" }, 401)
+
+  const parts = request.url.split("/")
+  const planId = parts[parts.length - 2] // /api/plans/:id/execute
+
+  const plan = await env.DB.prepare(
+    "SELECT id, user_id, payee_id, purpose, amount, token, frequency, pay_day, start_date, next_run, status, source_wallet_id FROM payment_plans WHERE id = ? AND user_id = ?"
+  ).bind(planId, userId).first()
+  if (!plan) return json({ error: "Payment plan not found" }, 404)
+  if ((plan as any).status === "paused") return json({ error: "Payment plan is paused" }, 400)
+  if ((plan as any).status === "completed") return json({ error: "Payment plan is already completed" }, 400)
+
+  const payee = await env.DB.prepare(
+    "SELECT id, name, wallet_address FROM payees WHERE id = ? AND user_id = ?"
+  ).bind((plan as any).payee_id, userId).first()
+  if (!payee) return json({ error: "Payee not found" }, 404)
+
+  try {
+    const { txHash, txId } = await executePlanOnChain(plan, payee, env)
+
+    // Roll the plan forward
+    let nextRun: string | null = null
+    if ((plan as any).frequency === "once") {
+      await env.DB.prepare(
+        "UPDATE payment_plans SET status = 'completed', next_run = NULL WHERE id = ?"
+      ).bind(planId).run()
+    } else {
+      // Anchor on the previously scheduled slot: paying early never shortens the cadence
+      nextRun = computePlanNextRun((plan as any).frequency, (plan as any).pay_day, (plan as any).start_date, (plan as any).next_run)
+      await env.DB.prepare(
+        "UPDATE payment_plans SET next_run = ? WHERE id = ?"
+      ).bind(nextRun, planId).run()
+    }
+
+    return json({
+      executed: true,
+      transaction: { id: txId, txHash, status: "confirmed" },
+      nextRun,
+    })
+  } catch (err: any) {
+    return json({ error: `Payment failed: ${err.message}` }, 502)
   }
 }
 

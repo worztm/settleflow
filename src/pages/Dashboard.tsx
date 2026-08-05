@@ -6,6 +6,7 @@ import { Card, CardContent } from "../components/ui/card"
 import { Badge } from "../components/ui/badge"
 import { Input } from "../components/ui/input"
 import { ModeToggle } from "../components/mode-toggle"
+import PayrollSection from "../components/payroll"
 import { useAuth } from "../lib/auth-context"
 import {
   Wallet, Send, CalendarClock, ArrowUpRight, ArrowDownLeft,
@@ -299,7 +300,7 @@ export default function DashboardPage() {
                   </div>
                 </div>
                 <p className="text-sm text-muted-foreground mb-6">
-                  All your wallets, transactions, schedules, and personal data will be permanently deleted.
+                  All your wallets, transactions, schedules, payees, and personal data will be permanently deleted.
                   Your USDC balances on the blockchain will <span className="font-medium text-foreground">not</span> be affected —
                   you can access them from any wallet with your private keys.
                 </p>
@@ -592,6 +593,9 @@ export default function DashboardPage() {
               </Card>
             </div>
           </div>
+
+          {/* Payees & Payments (payroll) */}
+          <PayrollSection />
 
           {/* Stats */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">

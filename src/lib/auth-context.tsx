@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react"
 import { api } from "./api-client"
+import type { Payee, PaymentPlan } from "./types"
 
 interface User {
   id: string
@@ -57,7 +58,15 @@ interface AuthContextType {
   wallets: Wallet[]
   transactions: Transaction[]
   schedules: Schedule[]
+  payees: Payee[]
   totalBalance: number
+  createPayee: (data: { name: string; walletAddress: string; category?: string; notes?: string }) => Promise<Payee>
+  updatePayee: (id: string, data: { name?: string; walletAddress?: string; category?: string; notes?: string }) => Promise<void>
+  deletePayee: (id: string) => Promise<void>
+  createPlan: (payeeId: string, data: { purpose?: string; amount: string; frequency?: string; payDay?: number | null; startDate?: string | null; sourceWalletId?: string | null }) => Promise<PaymentPlan>
+  updatePlan: (payeeId: string, planId: string, data: Partial<Omit<PaymentPlan, "id" | "payeeId">>) => Promise<void>
+  deletePlan: (payeeId: string, planId: string) => Promise<void>
+  executePlan: (payeeId: string, planId: string) => Promise<void>
   connectWallet: (address: string, chain?: string, label?: string) => Promise<void>
   signInWithCode: (email: string, code: string) => Promise<void>
   forgotPassword: (email: string) => Promise<{ success: boolean; message: string }>
@@ -86,7 +95,14 @@ function getLocalUser(): User | null {
   } catch { return null }
 }
 
-function getLocalData(userId: string): { wallets: Wallet[]; transactions: Transaction[]; schedules: Schedule[] } | null {
+interface LocalData {
+  wallets: Wallet[]
+  transactions: Transaction[]
+  schedules: Schedule[]
+  payees: Payee[]
+}
+
+function getLocalData(userId: string): LocalData | null {
   if (typeof window === "undefined") return null
   const raw = localStorage.getItem(`sf_data_${userId}`)
   if (raw) {
@@ -95,8 +111,11 @@ function getLocalData(userId: string): { wallets: Wallet[]; transactions: Transa
   return null
 }
 
-function saveLocalData(userId: string, data: { wallets: Wallet[]; transactions: Transaction[]; schedules: Schedule[] }) {
-  localStorage.setItem(`sf_data_${userId}`, JSON.stringify(data))
+// Merge into the stored snapshot so callers that only update one slice
+// (e.g. payees) never clobber the others.
+function saveLocalData(userId: string, data: Partial<LocalData>) {
+  const existing = getLocalData(userId) || {}
+  localStorage.setItem(`sf_data_${userId}`, JSON.stringify({ ...existing, ...data }))
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -106,6 +125,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [wallets, setWallets] = useState<Wallet[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [schedules, setSchedules] = useState<Schedule[]>([])
+  const [payees, setPayees] = useState<Payee[]>([])
 
   // Load persisted wallet/schedule data from localStorage on mount
   useEffect(() => {
@@ -115,6 +135,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setWallets(stored.wallets ?? [])
         setTransactions(stored.transactions ?? [])
         setSchedules(stored.schedules ?? [])
+        setPayees(stored.payees ?? [])
       }
       // Try to fetch fresh data from API
       api.auth.me()
@@ -125,15 +146,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               label: w.label, isPrimary: w.isPrimary, balance: w.balance,
               createdAt: w.createdAt,
             })))
-            saveLocalData(user.id, {
-              wallets: res.wallets,
-              transactions: getLocalData(user.id)?.transactions || [],
-              schedules: getLocalData(user.id)?.schedules || [],
-            })
           }
+          return api.payees.list()
+        })
+        .then(res => {
+          if (res?.payees) setPayees(res.payees)
         })
         .catch(() => {})
-        .finally(() => setIsLoading(false))
+        .finally(() => {
+          saveLocalData(user.id, {
+            wallets,
+            transactions,
+            schedules,
+            payees,
+          })
+          setIsLoading(false)
+        })
     } else {
       setIsLoading(false)
     }
@@ -278,6 +306,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setWallets([])
     setTransactions([])
     setSchedules([])
+    setPayees([])
     localStorage.removeItem("sf_token")
     localStorage.removeItem("sf_user")
     // Remove all user data from localStorage
@@ -288,18 +317,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refreshData = useCallback(async () => {
     if (!user) return
     try {
-      const [walletRes, txRes, schedRes] = await Promise.all([
+      const [walletRes, txRes, schedRes, payeeRes] = await Promise.all([
         api.wallets.list(),
         api.transactions.list(),
         api.schedules.list(),
+        api.payees.list(),
       ])
       if (walletRes.wallets) setWallets(walletRes.wallets)
       if (txRes.transactions) setTransactions(txRes.transactions)
       if (schedRes.schedules) setSchedules(schedRes.schedules)
+      if (payeeRes.payees) setPayees(payeeRes.payees)
       saveLocalData(user.id, {
         wallets: walletRes.wallets || wallets,
         transactions: txRes.transactions || transactions,
         schedules: schedRes.schedules || schedules,
+        payees: payeeRes.payees || payees,
       })
     } catch {}
   }, [user])
@@ -322,12 +354,102 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const totalBalance = wallets.reduce((sum, w) => sum + parseFloat(w.balance || "0"), 0)
 
+  // ─── Payees & Payment Plans (payroll) ────────────────────────────────
+
+  const persistPayees = (updated: Payee[]) => {
+    setPayees(updated)
+    if (user) saveLocalData(user.id, { wallets, transactions, schedules, payees: updated })
+  }
+
+  const createPayee = async (data: { name: string; walletAddress: string; category?: string; notes?: string }) => {
+    if (!user) throw new Error("Not authenticated")
+    const res = await api.payees.create(data)
+    const p: Payee = {
+      id: res.payee.id, name: res.payee.name, walletAddress: res.payee.walletAddress,
+      category: res.payee.category, notes: res.payee.notes, createdAt: res.payee.createdAt,
+      plans: [],
+    }
+    persistPayees([p, ...payees])
+    return p
+  }
+
+  const updatePayee = async (id: string, data: { name?: string; walletAddress?: string; category?: string; notes?: string }) => {
+    if (!user) throw new Error("Not authenticated")
+    const res = await api.payees.update(id, data)
+    const updated = payees.map(p => p.id === id ? { ...p, ...res.payee, plans: p.plans } : p)
+    persistPayees(updated)
+  }
+
+  const deletePayee = async (id: string) => {
+    if (!user) throw new Error("Not authenticated")
+    await api.payees.delete(id)
+    persistPayees(payees.filter(p => p.id !== id))
+  }
+
+  const createPlan = async (payeeId: string, data: { purpose?: string; amount: string; frequency?: string; payDay?: number | null; startDate?: string | null; sourceWalletId?: string | null }) => {
+    if (!user) throw new Error("Not authenticated")
+    const res = await api.plans.create({ payeeId, ...data })
+    const plan: PaymentPlan = {
+      id: res.plan.id, payeeId: res.plan.payeeId, purpose: res.plan.purpose,
+      amount: res.plan.amount, token: res.plan.token, frequency: res.plan.frequency,
+      payDay: res.plan.payDay, startDate: res.plan.startDate, nextRun: res.plan.nextRun,
+      status: res.plan.status, sourceWalletId: res.plan.sourceWalletId,
+      createdAt: res.plan.createdAt,
+    }
+    persistPayees(payees.map(p => p.id === payeeId ? { ...p, plans: [plan, ...p.plans] } : p))
+    return plan
+  }
+
+  const updatePlan = async (payeeId: string, planId: string, data: Partial<Omit<PaymentPlan, "id" | "payeeId">>) => {
+    if (!user) throw new Error("Not authenticated")
+    const res = await api.plans.update(planId, data)
+    persistPayees(payees.map(p => p.id === payeeId ? {
+      ...p,
+      plans: p.plans.map(pl => pl.id === planId ? { ...pl, ...res.plan } : pl),
+    } : p))
+  }
+
+  const deletePlan = async (payeeId: string, planId: string) => {
+    if (!user) throw new Error("Not authenticated")
+    await api.plans.delete(planId)
+    persistPayees(payees.map(p => p.id === payeeId ? { ...p, plans: p.plans.filter(pl => pl.id !== planId) } : p))
+  }
+
+  const executePlan = async (payeeId: string, planId: string) => {
+    if (!user) throw new Error("Not authenticated")
+    // Grab the plan's amount for an accurate transaction record
+    const plan = payees.find(p => p.id === payeeId)?.plans.find(pl => pl.id === planId)
+    const res = await api.plans.execute(planId)
+    // Record the executed transaction locally
+    const tx: Transaction = {
+      id: res.transaction.id, txHash: res.transaction.txHash, type: "payroll",
+      amount: plan?.amount || "0", token: plan?.token || "USDC", status: res.transaction.status,
+      recipient: payees.find(p => p.id === payeeId)?.walletAddress,
+      memo: plan ? `${plan.purpose} (payroll)` : "Payroll",
+      createdAt: new Date().toISOString(),
+    }
+    const txUpdated = [tx, ...transactions]
+    // Roll the plan forward (next run / completed) — one consistent save
+    const payeesUpdated: Payee[] = payees.map(p => p.id === payeeId ? {
+      ...p,
+      plans: p.plans.map(pl => pl.id === planId ? {
+        ...pl,
+        nextRun: res.nextRun,
+        status: (res.nextRun ? "active" : "completed") as PaymentPlan["status"],
+      } : pl),
+    } : p)
+    setPayees(payeesUpdated)
+    setTransactions(txUpdated)
+    saveLocalData(user.id, { wallets, transactions: txUpdated, schedules, payees: payeesUpdated })
+  }
+
   return (
     <AuthContext.Provider value={{
       user, token, isAuthenticated: !!user, isLoading,
       login, register, logout, deleteAccount,
-      wallets, transactions, schedules, totalBalance,
+      wallets, transactions, schedules, payees, totalBalance,
       connectWallet, signInWithCode, forgotPassword, resetPassword, refreshData, sendPayment, createSchedule, executeSchedule, deleteSchedule, syncWallets,
+      createPayee, updatePayee, deletePayee, createPlan, updatePlan, deletePlan, executePlan,
     }}>
       {children}
     </AuthContext.Provider>

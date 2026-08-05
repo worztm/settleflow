@@ -76,6 +76,26 @@ export const api = {
     delete: (id: string) =>
       request<{ success: boolean; message: string }>(`/schedules/${id}`, { method: "DELETE" }),
   },
+  payees: {
+    list: () => request<{ payees: any[] }>("/payees"),
+    create: (data: { name: string; walletAddress: string; category?: string; notes?: string }) =>
+      request<{ payee: any }>("/payees", { method: "POST", body: JSON.stringify(data) }),
+    update: (id: string, data: { name?: string; walletAddress?: string; category?: string; notes?: string }) =>
+      request<{ payee: any }>(`/payees/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    delete: (id: string) =>
+      request<{ success: boolean; message: string }>(`/payees/${id}`, { method: "DELETE" }),
+  },
+  plans: {
+    list: () => request<{ plans: any[] }>("/plans"),
+    create: (data: { payeeId: string; purpose?: string; amount: string; token?: string; frequency?: string; payDay?: number | null; startDate?: string | null; sourceWalletId?: string | null }) =>
+      request<{ plan: any }>("/plans", { method: "POST", body: JSON.stringify(data) }),
+    update: (id: string, data: { purpose?: string; amount?: string; frequency?: string; payDay?: number | null; startDate?: string | null; sourceWalletId?: string | null; status?: string }) =>
+      request<{ plan: any }>(`/plans/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    execute: (id: string) =>
+      request<{ executed: boolean; transaction: any; nextRun: string | null }>(`/plans/${id}/execute`, { method: "POST" }),
+    delete: (id: string) =>
+      request<{ success: boolean; message: string }>(`/plans/${id}`, { method: "DELETE" }),
+  },
   ai: {
     parseIntent: (text: string) =>
       request<{ intent: any }>("/ai/parse-intent", { method: "POST", body: JSON.stringify({ text }) }),

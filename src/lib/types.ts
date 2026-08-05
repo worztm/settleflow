@@ -18,7 +18,7 @@ export interface Wallet {
 export interface Transaction {
   id: string
   txHash?: string
-  type: 'send' | 'receive' | 'swap' | 'schedule'
+  type: 'send' | 'receive' | 'swap' | 'schedule' | 'payroll'
   amount: string
   token: string
   status: 'pending' | 'confirmed' | 'failed' | 'scheduled'
@@ -41,4 +41,35 @@ export interface Schedule {
   status: 'active' | 'paused' | 'completed'
   conditions?: string
   createdAt: string
+}
+
+// Payees = employees, vendors, contractors, ... any recipient the user sets up.
+// Category is a free-text label the user chooses ("Employee", "Vendor", "Freelancer", ...).
+export interface Payee {
+  id: string
+  name: string
+  walletAddress: string
+  category: string
+  notes?: string
+  createdAt?: string
+  plans: PaymentPlan[]
+}
+
+// A payment plan defines how much a payee gets, for what purpose (free text:
+// "Salary", "Bonus", "Commission", ...), how often, and on which date/day.
+export interface PaymentPlan {
+  id: string
+  payeeId: string
+  purpose: string
+  amount: string
+  token: string
+  // once | daily | weekly | bi-weekly | monthly | quarterly | yearly
+  frequency: string
+  // weekly -> 0-6 (0=Sunday); monthly/quarterly/yearly -> 1-31 (day of month)
+  payDay?: number | null
+  startDate?: string | null
+  nextRun?: string | null
+  status: 'active' | 'paused' | 'completed'
+  sourceWalletId?: string | null
+  createdAt?: string
 }
