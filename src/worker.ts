@@ -1,5 +1,9 @@
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
 import { createPublicClient, createWalletClient, http, formatUnits, parseUnits, getAddress, defineChain } from "viem"
+// Single scheduling core shared with the frontend — used for AI-created
+// schedules, manual schedules, AND payee payment plans so every cadence is
+// computed by the same function.
+import { computeNextRun } from "./lib/scheduling"
 
 // Arc Testnet chain definition for viem
 // Verified: chainId=5039954 via eth_chainId, actively running with 53M+ blocks
@@ -93,6 +97,7 @@ export default {
       if (path === "/api/schedules/create" && request.method === "POST") return handleCreateSchedule(request, env)
       if (path === "/api/schedules/ai-create" && request.method === "POST") return handleAICreateSchedule(request, env)
       if (path.match(/^\/api\/schedules\/[\w-]+\/execute$/) && request.method === "POST") return handleExecuteSchedule(request, env)
+      if (path.match(/^\/api\/schedules\/[\w-]+$/) && request.method === "PATCH") return handleUpdateSchedule(request, env)
       if (path.match(/^\/api\/schedules\/[\w-]+$/) && request.method === "DELETE") return handleDeleteSchedule(request, env)
 
       // Payees (employees, vendors, contractors, ...)
@@ -949,6 +954,56 @@ async function handleSendTransaction(request: Request, env: Env) {
 
 // ─── Schedule Handlers ────────────────────────────────────────────────────
 
+// Pause / resume / complete a schedule. Resuming recomputes the next run so
+// the schedule keeps firing on its cadence (e.g. every Friday).
+async function handleUpdateSchedule(request: Request, env: Env) {
+  const userId = await getUserId(request, env)
+  if (!userId) return json({ error: "Unauthorized" }, 401)
+  const id = request.url.split("/").pop()!
+
+  const existing = await env.DB.prepare(
+    "SELECT id, frequency, next_run, status FROM schedules WHERE id = ? AND user_id = ?"
+  ).bind(id, userId).first()
+  if (!existing) return json({ error: "Schedule not found" }, 404)
+
+  let body: any
+  try { body = await request.json() } catch { return json({ error: "Invalid JSON" }, 400) }
+
+  const fields: Record<string, any> = {}
+  if (body.status !== undefined) {
+    if (!["active", "paused", "completed"].includes(body.status)) {
+      return json({ error: "Invalid status" }, 400)
+    }
+    fields.status = body.status
+  }
+
+  const keys = Object.keys(fields)
+  if (keys.length === 0) return json({ error: "Nothing to update" }, 400)
+  await env.DB.prepare(
+    `UPDATE schedules SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ? AND user_id = ?`
+  ).bind(...keys.map((k) => fields[k]), id, userId).run()
+
+  // Resuming recomputes the next occurrence from now (no anchor — the paused
+  // stretch should not force an immediate back-dated payment).
+  if (fields.status === "active" && (existing as any).status !== "active") {
+    const nextRun = computeNextRun((existing as any).frequency)
+    await env.DB.prepare("UPDATE schedules SET next_run = ? WHERE id = ?").bind(nextRun, id).run()
+  }
+
+  const schedule = await env.DB.prepare(
+    "SELECT id, title, description, amount, token, recipient, frequency, next_run, status, conditions, created_at FROM schedules WHERE id = ? AND user_id = ?"
+  ).bind(id, userId).first()
+  return json({
+    schedule: {
+      id: (schedule as any).id, title: (schedule as any).title, description: (schedule as any).description,
+      amount: (schedule as any).amount, token: (schedule as any).token, recipient: (schedule as any).recipient,
+      frequency: (schedule as any).frequency, nextRun: (schedule as any).next_run,
+      status: (schedule as any).status, conditions: (schedule as any).conditions,
+      createdAt: (schedule as any).created_at,
+    },
+  })
+}
+
 async function handleGetSchedules(request: Request, env: Env) {
   const userId = await getUserId(request, env)
   if (!userId) return json({ error: "Unauthorized" }, 401)
@@ -975,28 +1030,22 @@ async function handleCreateSchedule(request: Request, env: Env) {
   if (!title || !amount || !recipient || !frequency) return json({ error: "title, amount, recipient, and frequency required" }, 400)
 
   const id = crypto.randomUUID()
+  // Always materialize a next_run — schedules with NULL next_run are invisible
+  // to the cron (`next_run <= now`) and would silently never fire.
+  const next = nextRun || computeNextRun(frequency)
   await env.DB.prepare(
     "INSERT INTO schedules (id, user_id, title, description, amount, token, recipient, frequency, next_run, status, conditions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)"
-  ).bind(id, userId, title, description || "", amount, token || "USDC", recipient, frequency, nextRun || null, conditions || null).run()
+  ).bind(id, userId, title, description || "", amount, token || "USDC", recipient, frequency, next, conditions || null).run()
 
   return json({
-    schedule: { id, title, description, amount, token: token || "USDC", recipient, frequency, nextRun: nextRun || null, status: "active", conditions: conditions || null, createdAt: new Date().toISOString() },
+    schedule: { id, title, description, amount, token: token || "USDC", recipient, frequency, nextRun: next, status: "active", conditions: conditions || null, createdAt: new Date().toISOString() },
   })
 }
 
-function computeNextRun(frequency: string): string {
-  const now = new Date()
-  switch (frequency) {
-    case "daily": now.setDate(now.getDate() + 1); break
-    case "weekly":
-    case "weekly-monday":
-    case "weekly-friday": now.setDate(now.getDate() + 7); break
-    case "bi-weekly": now.setDate(now.getDate() + 14); break
-    case "monthly": now.setMonth(now.getMonth() + 1); break
-    default: now.setDate(now.getDate() + 7); break
-  }
-  return now.toISOString()
-}
+// NOTE: the old schedule-only computeNextRun (which added +7 days for every
+// frequency — making "every friday" schedules fire on the wrong weekday) has
+// been removed. The unified computeNextRun from ./lib/scheduling is used for
+// schedules AND payee plans so every cadence is computed identically.
 
 async function handleAICreateSchedule(request: Request, env: Env) {
   const userId = await getUserId(request, env)
@@ -1063,6 +1112,8 @@ Examples:
     }
 
     const id = crypto.randomUUID()
+    // computeNextRun knows the weekday aliases, so "every friday" schedules
+    // land on the *next actual Friday* instead of +7 days from creation.
     const nextRun = computeNextRun(scheduleData.frequency || "weekly")
 
     await env.DB.prepare(
@@ -1131,8 +1182,9 @@ async function handleExecuteSchedule(request: Request, env: Env) {
     "INSERT INTO transactions (id, user_id, wallet_id, tx_hash, type, amount, token, status, recipient, memo, created_at) VALUES (?, ?, ?, ?, 'schedule', ?, ?, 'confirmed', ?, ?, datetime('now'))"
   ).bind(txId, userId, (wallet as any).id, txHash, (schedule as any).amount, (schedule as any).token, (schedule as any).recipient, `Scheduled: ${(schedule as any).title || ""}`).run()
 
-  // Update schedule's next_run
-  const nextRun = computeNextRun((schedule as any).frequency)
+  // Update schedule's next_run — anchored on the slot that just fired so a
+  // queue that processes late never shifts the payday cadence.
+  const nextRun = computeNextRun((schedule as any).frequency, null, null, (schedule as any).next_run)
   await env.DB.prepare(
     "UPDATE schedules SET next_run = ? WHERE id = ?"
   ).bind(nextRun, scheduleId).run()
@@ -1375,8 +1427,9 @@ async function processScheduledExecution(scheduleId: string, userId: string, env
       "INSERT INTO transactions (id, user_id, wallet_id, tx_hash, type, amount, token, status, recipient, memo, created_at) VALUES (?, ?, ?, ?, 'schedule', ?, ?, 'confirmed', ?, ?, datetime('now'))"
     ).bind(txId, userId, (wallet as any).id, txHash, (schedule as any).amount, (schedule as any).token, (schedule as any).recipient, `Scheduled: ${(schedule as any).title || ""}`).run()
 
-    // Update schedule's next_run
-    const nextRun = computeNextRun((schedule as any).frequency)
+    // Update schedule's next_run — anchored on the slot that just fired so
+    // late processing never drifts the payday cadence.
+    const nextRun = computeNextRun((schedule as any).frequency, null, null, (schedule as any).next_run)
     await env.DB.prepare(
       "UPDATE schedules SET next_run = ? WHERE id = ?"
     ).bind(nextRun, scheduleId).run()
@@ -1399,84 +1452,14 @@ async function processScheduledExecution(scheduleId: string, userId: string, env
 const PLAN_FREQUENCIES = ["once", "daily", "weekly", "bi-weekly", "monthly", "quarterly", "yearly"]
 
 // payDay semantics:
-//   weekly                         -> 0-6 (0 = Sunday .. 6 = Saturday)
-//   monthly / quarterly / yearly   -> 1-31 (day of month, clamped to month length)
-//   once / daily / bi-weekly       -> ignored (not required)
-//
-// `at` is the previous scheduled slot (the next_run that just fired). When rolling
-// forward after an execution we anchor on it (+period) so a queue that processes
-// late never shifts the payday cadence. When `at` is omitted (plan creation or
-// resume), we compute the next occurrence from the plan's series against now.
-function computePlanNextRun(frequency: string, payDay: number | null, startDate?: string | null, at?: string | null): string | null {
-  const now = new Date()
-  const start = startDate ? new Date(startDate) : null
-  const hasStart = !!start && !isNaN(start.getTime())
-  const anchor = at ? new Date(at) : null
-  const hasAnchor = !!anchor && !isNaN(anchor.getTime())
-
-  if (frequency === "once") {
-    // One-time payout fires on the chosen date (or immediately when none is set)
-    if (!hasStart || start!.getTime() <= now.getTime()) return now.toISOString()
-    return start!.toISOString()
-  }
-
-  // Keep the time-of-day of the first payment so payouts happen at the same hour
-  const hour = hasAnchor ? anchor!.getHours() : hasStart ? start!.getHours() : 9
-  const minute = hasAnchor ? anchor!.getMinutes() : hasStart ? start!.getMinutes() : 0
-
-  if (frequency === "daily") {
-    const base = hasAnchor ? anchor! : now
-    const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + 1, hour, minute, 0, 0)
-    return d.toISOString()
-  }
-
-  if (frequency === "bi-weekly") {
-    // Fires on the same weekday as the first payment, every 14 days. Anchored runs
-    // simply add 14 days to the previous slot so late processing never drifts.
-    const base = hasAnchor ? anchor! : now
-    const d = hasAnchor
-      ? new Date(base.getFullYear(), base.getMonth(), base.getDate() + 14, hour, minute, 0, 0)
-      : new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0)
-    if (!hasAnchor) {
-      const baseDow = hasStart ? start!.getDay() : now.getDay()
-      let diff = (baseDow - d.getDay() + 7) % 7
-      d.setDate(d.getDate() + diff)
-      if (d.getTime() <= now.getTime()) d.setDate(d.getDate() + 14)
-    }
-    return d.toISOString()
-  }
-
-  if (frequency === "weekly") {
-    if (hasAnchor) {
-      const d = new Date(anchor!.getFullYear(), anchor!.getMonth(), anchor!.getDate() + 7, hour, minute, 0, 0)
-      return d.toISOString()
-    }
-    const targetDow = payDay ?? (hasStart ? start!.getDay() : now.getDay())
-    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0)
-    let diff = (targetDow - d.getDay() + 7) % 7
-    if (diff === 0) diff = 7 // always move to the *next* occurrence
-    d.setDate(d.getDate() + diff)
-    return d.toISOString()
-  }
-
-  // monthly / quarterly / yearly — day-of-month based, aligned to the start month
-  const targetDom = payDay ?? (hasStart ? start!.getDate() : now.getDate())
-  const baseMonth = hasAnchor ? anchor!.getMonth() : hasStart ? start!.getMonth() : now.getMonth()
-  const baseYear = hasAnchor ? anchor!.getFullYear() : hasStart ? start!.getFullYear() : now.getFullYear()
-  const stepMonths = frequency === "quarterly" ? 3 : frequency === "yearly" ? 12 : 1
-  // The next slot must be strictly after the previous slot (anchor); when there is
-  // no anchor (fresh plan / resume) it must be after now.
-  const after = hasAnchor ? anchor!.getTime() : now.getTime()
-
-  let candidate = new Date(baseYear, baseMonth, 1)
-  for (;;) {
-    const lastDay = new Date(candidate.getFullYear(), candidate.getMonth() + 1, 0).getDate()
-    const day = Math.min(Math.max(1, targetDom), lastDay)
-    const d = new Date(candidate.getFullYear(), candidate.getMonth(), day, hour, minute, 0, 0)
-    if (d.getTime() > after) return d.toISOString()
-    candidate = new Date(candidate.getFullYear(), candidate.getMonth() + stepMonths, 1)
-  }
-}
+// NOTE: the plan-only computePlanNextRun has been replaced by the unified
+// computeNextRun from ./lib/scheduling — the exact same function used for
+// AI-created / manual schedules. payDay semantics are unchanged:
+//   weekly                       -> 0-6 (0 = Sunday .. 6 = Saturday)
+//   monthly / quarterly / yearly -> 1-31 (day of month, clamped to month length)
+//   once / daily / bi-weekly     -> ignored (not required)
+// `at` (the previous next_run) anchors roll-forward so late processing never
+// shifts the payday cadence.
 
 // Executes a payment plan on-chain and rolls it forward (shared by the queue consumer
 // and the manual "Pay now" endpoint). Compatible with Arc's native-USDC transfers.
@@ -1554,7 +1537,7 @@ async function processPlanExecution(planId: string, userId: string, env: Env) {
       ).bind(planId).run()
     } else {
       // Anchor on the slot that just fired so late processing never drifts the payday
-      const nextRun = computePlanNextRun((plan as any).frequency, (plan as any).pay_day, (plan as any).start_date, (plan as any).next_run)
+      const nextRun = computeNextRun((plan as any).frequency, (plan as any).pay_day, (plan as any).start_date, (plan as any).next_run)
       await env.DB.prepare(
         "UPDATE payment_plans SET next_run = ? WHERE id = ?"
       ).bind(nextRun, planId).run()
@@ -1727,7 +1710,7 @@ async function handleCreatePlan(request: Request, env: Env) {
 
   const id = crypto.randomUUID()
   const payDayClean = (payDay === undefined || payDay === null || payDay === "") ? null : parseInt(payDay)
-  const nextRun = computePlanNextRun(freq, payDayClean, startDate || null)
+  const nextRun = computeNextRun(freq, payDayClean, startDate || null)
 
   await env.DB.prepare(
     "INSERT INTO payment_plans (id, user_id, payee_id, purpose, amount, token, frequency, pay_day, start_date, next_run, status, source_wallet_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)"
@@ -1808,9 +1791,14 @@ async function handleUpdatePlan(request: Request, env: Env) {
     `UPDATE payment_plans SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ? AND user_id = ?`
   ).bind(...keys.map((k) => fields[k]), id, userId).run()
 
-  // If the plan became active again, roll forward the next run
-  if (fields.status === "active" && fields.status !== (existing as any).status) {
-    const nextRun = computePlanNextRun(frequency, payDay, startDate)
+  // Recompute next_run whenever the cadence changed (frequency / payDay /
+  // startDate) or the plan was resumed. Otherwise an edited schedule keeps its
+  // stale next_run and fires at the wrong time. Fresh anchor from now — the
+  // old anchor's schedule is void after an edit.
+  const cadenceChanged = ["frequency", "pay_day", "start_date"].some(k => fields[k] !== undefined)
+  const resumed = fields.status === "active" && (existing as any).status !== "active"
+  if (cadenceChanged || resumed) {
+    const nextRun = computeNextRun(frequency, payDay, startDate)
     await env.DB.prepare("UPDATE payment_plans SET next_run = ? WHERE id = ?").bind(nextRun, id).run()
   }
 
@@ -1863,7 +1851,7 @@ async function handleExecutePlan(request: Request, env: Env) {
       ).bind(planId).run()
     } else {
       // Anchor on the previously scheduled slot: paying early never shortens the cadence
-      nextRun = computePlanNextRun((plan as any).frequency, (plan as any).pay_day, (plan as any).start_date, (plan as any).next_run)
+      nextRun = computeNextRun((plan as any).frequency, (plan as any).pay_day, (plan as any).start_date, (plan as any).next_run)
       await env.DB.prepare(
         "UPDATE payment_plans SET next_run = ? WHERE id = ?"
       ).bind(nextRun, planId).run()

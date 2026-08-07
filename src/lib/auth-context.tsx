@@ -1,6 +1,7 @@
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react"
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, type ReactNode } from "react"
 import { api } from "./api-client"
-import type { Payee, PaymentPlan } from "./types"
+import type { Payee, PaymentPlan, UnifiedSchedule } from "./types"
+import { computeNextRun } from "./scheduling"
 
 interface User {
   id: string
@@ -58,6 +59,8 @@ interface AuthContextType {
   wallets: Wallet[]
   transactions: Transaction[]
   schedules: Schedule[]
+  /** Unified, sorted list of ALL recurring payments — AI/created schedules AND payee plans */
+  scheduleEntries: UnifiedSchedule[]
   payees: Payee[]
   totalBalance: number
   createPayee: (data: { name: string; walletAddress: string; category?: string; notes?: string }) => Promise<Payee>
@@ -75,6 +78,8 @@ interface AuthContextType {
   sendPayment: (walletId: string, to: string, amount: string, token?: string) => Promise<void>
   createSchedule: (text: string) => Promise<Schedule>
   executeSchedule: (id: string) => Promise<void>
+  /** Pause / resume / complete an AI-created schedule */
+  setScheduleStatus: (id: string, status: "active" | "paused" | "completed") => Promise<void>
   deleteSchedule: (id: string) => Promise<void>
   deleteAccount: () => Promise<void>
   syncWallets: () => Promise<void>
@@ -260,10 +265,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const executeSchedule = async (id: string) => {
     if (!user) throw new Error("Not authenticated")
     const res = await api.schedules.execute(id)
-    // Add the executed transaction
+    // Add the executed transaction (use the real schedule amount/token so the
+    // history row is accurate instead of $0.00)
+    const exec = schedules.find(s => s.id === id)
     const tx: Transaction = {
-      id: res.transaction.id, type: "schedule", amount: "0", token: "USDC",
-      status: res.transaction.status, createdAt: new Date().toISOString(),
+      id: res.transaction.id, type: "schedule",
+      amount: exec?.amount || "0", token: exec?.token || "USDC",
+      status: res.transaction.status || "confirmed",
+      recipient: exec?.recipient,
+      memo: exec ? `Scheduled: ${exec.title}` : undefined,
+      createdAt: new Date().toISOString(),
     }
     const txUpdated = [tx, ...transactions]
     setTransactions(txUpdated)
@@ -276,6 +287,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!user) throw new Error("Not authenticated")
     await api.schedules.delete(id)
     const updated = schedules.filter(s => s.id !== id)
+    setSchedules(updated)
+    saveLocalData(user.id, { wallets, transactions, schedules: updated })
+  }
+
+  const setScheduleStatus = async (id: string, status: "active" | "paused" | "completed") => {
+    if (!user) throw new Error("Not authenticated")
+    const res = await api.schedules.update(id, { status })
+    const updated = schedules.map(s => s.id === id
+      ? { ...s, status: res.schedule.status, nextRun: res.schedule.nextRun ?? s.nextRun }
+      : s)
     setSchedules(updated)
     saveLocalData(user.id, { wallets, transactions, schedules: updated })
   }
@@ -345,7 +366,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       saveLocalData(user.id, {
         wallets: res.wallets || wallets,
         transactions: res.transactions || transactions,
-        schedules,
+        // NOTE: deliberately do NOT stash `schedules`/`payees` here — this
+        // callback closes over an old snapshot, and a merge would clobber
+        // schedules created since. saveLocalData merges, so omitted keys stay
+        // untouched locally and the API refreshes them on mount.
       })
     } catch (err) {
       console.error("Wallet sync failed:", err)
@@ -353,6 +377,52 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user])
 
   const totalBalance = wallets.reduce((sum, w) => sum + parseFloat(w.balance || "0"), 0)
+
+  // Unified list of EVERY recurring payment — AI/created schedules plus payee
+  // recurring plans. Both are scheduled by the same computeNextRun(), and this
+  // list is what the dashboard's "Active Schedules" renders.
+  const scheduleEntries = useMemo<UnifiedSchedule[]>(() => {
+    const entries: UnifiedSchedule[] = schedules.map(s => ({
+      id: `schedule:${s.id}`,
+      kind: "ai" as const,
+      sourceId: s.id,
+      title: s.title,
+      amount: s.amount,
+      token: s.token,
+      recipient: s.recipient,
+      frequency: s.frequency,
+      nextRun: s.nextRun ?? null,
+      status: (s.status === "active" || s.status === "paused" || s.status === "completed" ? s.status : "active") as UnifiedSchedule["status"],
+      conditions: s.conditions,
+      createdAt: s.createdAt,
+    }))
+    for (const p of payees) {
+      for (const pl of p.plans) {
+        entries.push({
+          id: `plan:${pl.id}`,
+          kind: "payee" as const,
+          sourceId: pl.id,
+          payeeId: p.id,
+          title: `${pl.purpose} → ${p.name}`,
+          amount: pl.amount,
+          token: pl.token,
+          recipient: p.walletAddress,
+          frequency: pl.frequency,
+          // Project the next run with the same function the backend uses, so
+          // the UI stays accurate even when a fresh plan has no nextRun yet.
+          nextRun: pl.nextRun ?? (pl.status === "active" ? computeNextRun(pl.frequency, pl.payDay, pl.startDate) : null),
+          status: pl.status,
+          createdAt: pl.createdAt,
+        })
+      }
+    }
+    // Soonest upcoming payments first; entries without a next run sink to the bottom.
+    return entries.sort((a, b) => {
+      if (!a.nextRun) return 1
+      if (!b.nextRun) return -1
+      return a.nextRun.localeCompare(b.nextRun)
+    })
+  }, [schedules, payees])
 
   // ─── Payees & Payment Plans (payroll) ────────────────────────────────
 
@@ -447,8 +517,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <AuthContext.Provider value={{
       user, token, isAuthenticated: !!user, isLoading,
       login, register, logout, deleteAccount,
-      wallets, transactions, schedules, payees, totalBalance,
-      connectWallet, signInWithCode, forgotPassword, resetPassword, refreshData, sendPayment, createSchedule, executeSchedule, deleteSchedule, syncWallets,
+      wallets, transactions, schedules, scheduleEntries, payees, totalBalance,
+      connectWallet, signInWithCode, forgotPassword, resetPassword, refreshData, sendPayment, createSchedule, executeSchedule, setScheduleStatus, deleteSchedule, syncWallets,
       createPayee, updatePayee, deletePayee, createPlan, updatePlan, deletePlan, executePlan,
     }}>
       {children}

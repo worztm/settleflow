@@ -11,6 +11,9 @@ import { Badge } from "./ui/badge"
 import { Input } from "./ui/input"
 import { useAuth } from "../lib/auth-context"
 import type { Payee, PaymentPlan } from "../lib/types"
+// Shared scheduling definitions — the SAME frequency vocabulary/labels used by
+// the worker and the dashboard's unified schedule list.
+import { SCHEDULE_FREQUENCIES, WEEKDAYS, frequencyLabel } from "../lib/scheduling"
 
 // ─── Constants ────────────────────────────────────────────────────────────
 
@@ -24,17 +27,6 @@ const PURPOSE_SUGGESTIONS = [
   "Salary", "Bonus", "Commission", "Allowance", "Reimbursement",
   "Rent", "Subscription", "Incentive", "Stipend", "Other",
 ]
-const FREQUENCIES = [
-  { value: "once", label: "One-time" },
-  { value: "daily", label: "Daily" },
-  { value: "weekly", label: "Weekly" },
-  { value: "bi-weekly", label: "Bi-weekly" },
-  { value: "monthly", label: "Monthly" },
-  { value: "quarterly", label: "Quarterly" },
-  { value: "yearly", label: "Yearly" },
-]
-const FREQUENCY_LABELS: Record<string, string> = Object.fromEntries(FREQUENCIES.map(f => [f.value, f.label]))
-const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
 const MONTH_DAYS = Array.from({ length: 31 }, (_, i) => i + 1)
 
 function formatAmount(amount: string | number): string {
@@ -283,7 +275,7 @@ function PlanFormModal({ payee, editing, onClose }: { payee: Payee; editing: Pay
           <div>
             <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Frequency</label>
             <select className={selectCls} value={form.frequency} onChange={(e) => changeFrequency(e.target.value)}>
-              {FREQUENCIES.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+              {SCHEDULE_FREQUENCIES.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
             </select>
           </div>
           {needsPayDay ? (
@@ -397,7 +389,7 @@ function PlanRow({ payee, plan }: { payee: Payee; plan: PaymentPlan }) {
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <p className="text-sm font-semibold">{plan.purpose}</p>
-            <Badge variant="outline" className="text-[10px] h-4 px-1.5 font-medium">{FREQUENCY_LABELS[plan.frequency] || plan.frequency}</Badge>
+            <Badge variant="outline" className="text-[10px] h-4 px-1.5 font-medium">{frequencyLabel(plan.frequency, plan.payDay)}</Badge>
             <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${plan.status === "active" ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : plan.status === "paused" ? "bg-amber-500/10 text-amber-600 dark:text-amber-400" : "bg-muted text-muted-foreground"}`}>
               {plan.status}
             </span>

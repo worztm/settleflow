@@ -73,6 +73,8 @@ export const api = {
       request<{ schedule: any }>("/schedules/ai-create", { method: "POST", body: JSON.stringify({ text }) }),
     execute: (id: string) =>
       request<{ executed: boolean; transaction: any; nextRun: string }>(`/schedules/${id}/execute`, { method: "POST" }),
+    update: (id: string, data: { status?: string }) =>
+      request<{ schedule: any }>(`/schedules/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
     delete: (id: string) =>
       request<{ success: boolean; message: string }>(`/schedules/${id}`, { method: "DELETE" }),
   },

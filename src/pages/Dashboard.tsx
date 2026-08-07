@@ -8,11 +8,12 @@ import { Input } from "../components/ui/input"
 import { ModeToggle } from "../components/mode-toggle"
 import PayrollSection from "../components/payroll"
 import { useAuth } from "../lib/auth-context"
+import { frequencyLabel } from "../lib/scheduling"
 import {
   Wallet, Send, CalendarClock, ArrowUpRight, ArrowDownLeft,
   Repeat, Plus, LogOut, Menu, X, Copy, CheckCircle,
   Clock, Globe, Shield, Activity,
-  Bot, User, AlertCircle, Trash2,
+  Bot, User, AlertCircle, Trash2, Users, Pause, Play,
   Zap, DollarSign, TrendingUp, Sparkles, Loader2, ArrowRight,
 } from "lucide-react"
 
@@ -36,7 +37,7 @@ function formatAmount(amount: string | number): string {
 
 export default function DashboardPage() {
   const navigate = useNavigate()
-  const { user, token, isAuthenticated, isLoading, logout, wallets, transactions, schedules, totalBalance, connectWallet, createSchedule, deleteSchedule, deleteAccount, sendPayment, syncWallets } = useAuth()
+  const { user, token, isAuthenticated, isLoading, logout, wallets, transactions, scheduleEntries, totalBalance, connectWallet, createSchedule, deleteSchedule, setScheduleStatus, updatePlan, deletePlan, deleteAccount, sendPayment, syncWallets } = useAuth()
   const [menuOpen, setMenuOpen] = useState(false)
   const [walletInput, setWalletInput] = useState("")
   const [showWalletInput, setShowWalletInput] = useState(false)
@@ -558,32 +559,61 @@ export default function DashboardPage() {
               </Card>
             </div>
             <div>
-              <h2 className="text-lg font-semibold mb-4">Active Schedules</h2>
+              <h2 className="text-lg font-semibold mb-4">Active Schedules <span className="text-sm font-normal text-muted-foreground">({scheduleEntries.length})</span></h2>
               <Card>
                 <CardContent className="p-0">
-                  {schedules.length === 0 ? (
+                  {scheduleEntries.length === 0 ? (
                     <div className="p-8 text-center">
                       <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mx-auto mb-3"><CalendarClock className="w-6 h-6 text-muted-foreground" /></div>
                       <p className="text-sm text-muted-foreground">No schedules yet</p>
-                      <p className="text-xs text-muted-foreground mt-1">Try: "Schedule 200 USDC to bob every friday"</p>
+                      <p className="text-xs text-muted-foreground mt-1">Try: "Schedule 200 USDC to bob every friday" — or add a recurring plan to a payee</p>
                     </div>
                   ) : (
                     <div className="divide-y divide-border/50">
-                      {schedules.map((s, i) => (
+                      {scheduleEntries.map((s, i) => (
                         <motion.div key={s.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.05 }} className="p-4 hover:bg-muted/30 transition-colors">
                           <div className="flex items-start gap-3">
                             <div className="w-10 h-10 rounded-xl bg-muted flex items-center justify-center shrink-0"><Repeat className="w-5 h-5" /></div>
                             <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <p className="text-sm font-semibold truncate">{s.title}</p>
+                                {s.kind === "payee" && (
+                                  <Badge variant="outline" className="text-[10px] h-4 px-1.5 font-medium flex items-center gap-1"><Users className="w-2.5 h-2.5" />Payee</Badge>
+                                )}
                                 <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${statusColor(s.status)}`}>{s.status}</span>
                               </div>
-                              <p className="text-xs text-muted-foreground mt-1">${formatAmount(s.amount)} · {s.frequency}</p>
+                              <p className="text-xs text-muted-foreground mt-1">${formatAmount(s.amount)} · {frequencyLabel(s.frequency)}</p>
                               <p className="text-xs text-muted-foreground">→ {s.recipient}</p>
                               {s.conditions && <div className="flex items-center gap-1 mt-1.5 text-xs text-amber-500"><AlertCircle className="w-3 h-3" /><span>{s.conditions}</span></div>}
-                              {s.nextRun && <p className="text-xs mt-1.5 font-medium">Next: {new Date(s.nextRun).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}</p>}
+                              {s.nextRun && (() => {
+                                const d = new Date(s.nextRun)
+                                return !isNaN(d.getTime()) && (
+                                  <p className="text-xs mt-1.5 font-medium">Next: {d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}</p>
+                                )
+                              })()}
                             </div>
-                            <button onClick={async () => { if (window.confirm(`Delete schedule "${s.title}"?`)) { try { await deleteSchedule(s.id) } catch {} } }} className="p-1.5 text-muted-foreground hover:text-red-500 transition-colors shrink-0 rounded-lg hover:bg-red-500/10" title="Delete schedule"><Trash2 className="w-4 h-4" /></button>
+                            <div className="flex items-center gap-1 shrink-0">
+                              {s.status === "active" && (
+                                <button onClick={async () => {
+                                  try {
+                                    if (s.kind === "payee") await updatePlan(s.payeeId!, s.sourceId, { status: "paused" })
+                                    else await setScheduleStatus(s.sourceId, "paused")
+                                  } catch {}
+                                }} className="p-1.5 text-muted-foreground hover:text-foreground rounded-lg hover:bg-muted transition-colors" title="Pause schedule"><Pause className="w-4 h-4" /></button>
+                              )}
+                              {s.status === "paused" && (
+                                <button onClick={async () => {
+                                  try {
+                                    if (s.kind === "payee") await updatePlan(s.payeeId!, s.sourceId, { status: "active" })
+                                    else await setScheduleStatus(s.sourceId, "active")
+                                  } catch {}
+                                }} className="p-1.5 text-muted-foreground hover:text-foreground rounded-lg hover:bg-muted transition-colors" title="Resume schedule"><Play className="w-4 h-4" /></button>
+                              )}
+                              <button onClick={async () => { if (window.confirm(`Delete schedule "${s.title}"?`)) { try {
+                                if (s.kind === "payee") await deletePlan(s.payeeId!, s.sourceId)
+                                else await deleteSchedule(s.sourceId)
+                              } catch {} } }} className="p-1.5 text-muted-foreground hover:text-red-500 transition-colors shrink-0 rounded-lg hover:bg-red-500/10" title="Delete schedule"><Trash2 className="w-4 h-4" /></button>
+                            </div>
                           </div>
                         </motion.div>
                       ))}

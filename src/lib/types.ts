@@ -43,6 +43,30 @@ export interface Schedule {
   createdAt: string
 }
 
+// Unified view of every recurring payment the user has: AI-created / manual
+// schedules (kind "ai") and payee payment plans (kind "payee"). The dashboard
+// renders both in the same "Active Schedules" list, and both are scheduled by
+// the same computeNextRun() from lib/scheduling.
+export interface UnifiedSchedule {
+  /** unique entry key (`schedule:${id}` / `plan:${id}`) */
+  id: string
+  kind: 'ai' | 'payee'
+  /** underlying schedule id (kind=ai) or plan id (kind=payee) */
+  sourceId: string
+  /** set when kind === "payee" */
+  payeeId?: string
+  title: string
+  amount: string
+  token: string
+  /** wallet address (ai) or payee name (payee) */
+  recipient: string
+  frequency: string
+  nextRun: string | null
+  status: 'active' | 'paused' | 'completed'
+  conditions?: string
+  createdAt?: string
+}
+
 // Payees = employees, vendors, contractors, ... any recipient the user sets up.
 // Category is a free-text label the user chooses ("Employee", "Vendor", "Freelancer", ...).
 export interface Payee {
